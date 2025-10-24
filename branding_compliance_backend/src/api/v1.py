@@ -8,6 +8,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+import mimetypes
 from pydantic import BaseModel, Field, StrictStr
 
 from src.models.job import Job, JobStatus
@@ -275,7 +276,10 @@ def get_asset_preview(
 
     if not path.exists():
         raise HTTPException(status_code=404, detail="Preview not available")
-    return FileResponse(path)
+    # Infer media type for correct rendering in UI
+    guessed, _ = mimetypes.guess_type(str(path))
+    media_type = guessed or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 # PUBLIC_INTERFACE

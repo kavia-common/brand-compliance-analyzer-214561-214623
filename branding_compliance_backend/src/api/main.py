@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 from src.api.v1 import router as v1_router
 from src.services.state_store import StateStore
@@ -20,9 +21,23 @@ app = FastAPI(
 # Global state store instance; in larger apps this would be managed via DI container
 state_store = StateStore()
 
+# Configure CORS: allow local frontend and optional preview origin
+default_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+preview_origin = os.getenv("PREVIEW_FRONTEND_ORIGIN")
+if preview_origin:
+    default_origins.append(preview_origin)
+
+extra_origins = os.getenv("CORS_EXTRA_ORIGINS", "")
+if extra_origins:
+    # comma-separated list
+    default_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=default_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,8 +51,6 @@ def health_check():
     Returns:
         JSON payload with a status message and a simple state store readiness flag.
     """
-    # Minimal wiring: ensure state store can be instantiated and workspace is available on demand.
-    # We avoid creating any files here; creation occurs when jobs are created.
     ready = state_store is not None
     return {"message": "Healthy", "state_store_ready": ready}
 
@@ -56,6 +69,11 @@ def api_notes():
     return {
         "notes": "Analysis runs asynchronously via BackgroundTasks. Poll /api/v1/jobs/{job_id}/status and /results.",
         "previews": "Use /api/v1/jobs/{job_id}/assets/{asset_id}/preview?view=original|overlay|fixed",
+        "downloads": "Use /api/v1/jobs/{job_id}/download?type=zip|report|both; server sets Content-Disposition and proper Content-Type.",
+        "cors": {
+            "allow_origins": default_origins,
+            "note": "Configure PREVIEW_FRONTEND_ORIGIN and CORS_EXTRA_ORIGINS env vars to add more origins.",
+        },
     }
 
 

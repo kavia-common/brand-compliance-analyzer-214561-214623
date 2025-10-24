@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-import os
 import logging
 from pathlib import Path
 
@@ -27,39 +26,20 @@ app = FastAPI(
     ],
 )
 
-# Global state store instance; in larger apps this would be managed via DI container
-state_store = StateStore()
-
-# Configure CORS: allow local/preview frontend origins and handle preflight for all routes
-# Allow the exact origin plus localhost variants and http(s)
-allowed_origins = {
-    "https://vscode-internal-27606-beta.beta01.cloud.kavia.ai:3000",
-    "http://localhost:3000",
-    "https://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://127.0.0.1:3000",
-}
-# Allow optional preview origin and extra origins via env
-preview_origin = os.getenv("PREVIEW_FRONTEND_ORIGIN")
-if preview_origin:
-    allowed_origins.add(preview_origin.strip())
-
-extra_origins = os.getenv("CORS_EXTRA_ORIGINS", "")
-if extra_origins:
-    for o in extra_origins.split(","):
-        if o.strip():
-            allowed_origins.add(o.strip())
-
-# Add CORS middleware AS FIRST MIDDLEWARE so it applies to all mounted routers and routes
-# We do not use cookies -> allow_credentials must be False
+# IMPORTANT: CORS MUST be the first middleware so it applies globally to all routes and routers.
+# TODO(security): Revert to strict allow_origins list once 500 error diagnosis is complete.
+# Temporarily allow any origin/method/header to unblock the frontend during investigation.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=sorted(list(allowed_origins)),
-    allow_credentials=False,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
+    allow_credentials=False,
 )
+
+# Global state store instance; in larger apps this would be managed via DI container
+state_store = StateStore()
 
 # Mount a static files route to expose job outputs via HTTP
 # This maps to: {workspace_root}/jobs which contains <job_id>/outputs/...
@@ -105,7 +85,7 @@ def cors_check(request: Request):
         "ok": True,
         "origin": request.headers.get("origin"),
         "method": request.method,
-        "allowed_origins": sorted(list(allowed_origins)),
+        "allowed_origins": ["*"],  # reflects temporary permissive CORS
         "allow_credentials": False,
     }
 
@@ -132,12 +112,12 @@ def api_notes():
         "downloads": "Use /api/v1/jobs/{job_id}/download?type=zip|report|both; server sets Content-Disposition and proper Content-Type.",
         "public_files": "Outputs are served under /outputs/{job_id}/outputs/<file_name> for direct browser access.",
         "cors": {
-            "allow_origins": sorted(list(allowed_origins)),
+            "allow_origins": ["*"],
             "allow_methods": ["*"],
             "allow_headers": ["*"],
             "expose_headers": ["*"],
             "allow_credentials": False,
-            "note": "Configure PREVIEW_FRONTEND_ORIGIN and CORS_EXTRA_ORIGINS env vars to add more origins.",
+            "note": "Temporary permissive CORS to unblock frontend during investigation. TODO: restrict to specific origins via PREVIEW_FRONTEND_ORIGIN and CORS_EXTRA_ORIGINS.",
         },
     }
 

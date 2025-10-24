@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Request
 
 # Reuse models and services from v1 to ensure identical behavior/serialization
 from src.api.v1 import (
@@ -130,13 +130,20 @@ async def compat_upload_new_brand(
     description="Compatibility alias for POST /api/v1/jobs/{job_id}/analyze.",
     tags=["jobs"],
 )
-def compat_analyze_job(job_id: str, state: StateStore = Depends(get_state_store)):
+def compat_analyze_job(job_id: str, request: Request, state: StateStore = Depends(get_state_store)):
     try:
-        # v1_analyze_job uses BackgroundTasks in signature; in compat we call it without to keep simple proxy.
-        # FastAPI will inject a new BackgroundTasks object automatically when the dependency signature expects it.
-        return v1_analyze_job(job_id)  # type: ignore[arg-type]
+        # Forward request context so v1 can log origin/headers; BackgroundTasks is injected by FastAPI.
+        return v1_analyze_job(job_id, request=request)  # type: ignore[arg-type]
     except HTTPException as e:
         raise HTTPException(status_code=e.status_code, detail=_error_payload(e.status_code, str(e.detail)))
+
+
+# PUBLIC_INTERFACE
+@router.options("/jobs/{job_id}/analyze", include_in_schema=False)
+def compat_analyze_options(job_id: str):
+    """CORS preflight handler for compat analyze route."""
+    from fastapi import Response
+    return Response(status_code=200)
 
 
 # PUBLIC_INTERFACE

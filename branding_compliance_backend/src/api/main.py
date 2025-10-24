@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
@@ -12,6 +12,7 @@ from src.storage.workspace import get_root_workspace
 
 # Basic logging setup
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("api.main")
 
 app = FastAPI(
     title="Branding Compliance Backend",
@@ -45,13 +46,26 @@ if extra_origins:
     default_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
 
 # Add CORS middleware early so it applies to all mounted routers and routes
+# Per request: allow_credentials should be false unless cookies are needed (we don't use cookies)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=default_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["*", "Authorization", "Content-Type"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+# Explicit OPTIONS handler to guarantee a 200 for preflight on dynamic routes
+# FastAPI/Starlette CORS middleware typically handles this, but we add a generic fallback.
+# PUBLIC_INTERFACE
+@app.options("/{full_path:path}", include_in_schema=False)
+def preflight_options(full_path: str):
+    """Handle CORS preflight for all paths.
+
+    Returns:
+        Empty 200 OK response; CORS headers are added by CORSMiddleware.
+    """
+    return Response(status_code=200)
 
 # Mount a static files route to expose job outputs via HTTP
 # This maps to: {workspace_root}/jobs which contains <job_id>/outputs/...
@@ -98,6 +112,9 @@ def api_notes():
         "public_files": "Outputs are served under /outputs/{job_id}/outputs/<file_name> for direct browser access.",
         "cors": {
             "allow_origins": default_origins,
+            "allow_methods": ["*"],
+            "allow_headers": ["*"],
+            "allow_credentials": False,
             "note": "Configure PREVIEW_FRONTEND_ORIGIN and CORS_EXTRA_ORIGINS env vars to add more origins.",
         },
     }

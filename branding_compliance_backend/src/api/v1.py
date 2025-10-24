@@ -6,8 +6,8 @@ import zipfile
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, Request
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
 import mimetypes
 import logging
 import os
@@ -298,22 +298,48 @@ async def upload_new_brand(job_id: str, file: UploadFile = File(...), state: Sta
     description="Start analysis in background. Progress can be checked via status endpoint.",
     tags=["jobs"],
 )
-def analyze_job(job_id: str, background: BackgroundTasks, state: StateStore = Depends(get_state_store)):
+def analyze_job(job_id: str, background: BackgroundTasks, request: Request, state: StateStore = Depends(get_state_store)):
     """Trigger background analysis and preview generation."""
-    job = state.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
+    log = logging.getLogger("api.analyze")
+    try:
+        origin = request.headers.get("origin")
+        log.info("Analyze request: job_id=%s origin=%s headers=%s", job_id, origin, dict(request.headers))
+        job = state.get_job(job_id)
+        if job is None:
+            log.warning("Analyze request for missing job: %s", job_id)
+            return JSONResponse(status_code=404, content={"error": True, "message": "Job not found", "status": 404})
 
-    analyzer = AnalyzerService(state)
+        analyzer = AnalyzerService(state)
 
-    def run():
-        analyzer.analyze_job(job_id)
-        analyzer.generate_previews(job_id)
-        # leave job in generating_previews; next steps can move to summarizing/completed
+        def run():
+            try:
+                analyzer.analyze_job(job_id)
+                analyzer.generate_previews(job_id)
+            except Exception as e:
+                # Ensure background errors are visible in logs
+                log.exception("Background analyze error for job %s: %s", job_id, e)
 
-    background.add_task(run)
-    state.update_job_status(job_id, JobStatus.queued)
-    return {"message": "Analysis queued", "job_id": job_id}
+        background.add_task(run)
+        state.update_job_status(job_id, JobStatus.queued)
+        resp = {"message": "Analysis queued", "job_id": job_id}
+        log.info("Analyze response: %s", resp)
+        return resp
+    except HTTPException as he:
+        # log and return structured error
+        log.exception("Analyze HTTPException: %s", he)
+        return JSONResponse(status_code=he.status_code, content={"error": True, "message": str(he.detail), "status": he.status_code})
+    except Exception as e:
+        # Catch unexpected server errors to avoid opaque 500 without JSON
+        log.exception("Analyze unexpected error: %s", e)
+        return JSONResponse(status_code=500, content={"error": True, "message": "Internal Server Error", "status": 500})
+
+
+# Explicit OPTIONS for the analyze endpoint to assist preflight with path params
+# PUBLIC_INTERFACE
+@router.options("/jobs/{job_id}/analyze", include_in_schema=False)
+def analyze_options(job_id: str):
+    """CORS preflight handler for analyze route."""
+    return Response(status_code=200)
 
 
 # PUBLIC_INTERFACE

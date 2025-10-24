@@ -138,12 +138,7 @@ def compat_analyze_job(job_id: str, request: Request, state: StateStore = Depend
         raise HTTPException(status_code=e.status_code, detail=_error_payload(e.status_code, str(e.detail)))
 
 
-# PUBLIC_INTERFACE
-@router.options("/jobs/{job_id}/analyze", include_in_schema=False)
-def compat_analyze_options(job_id: str):
-    """CORS preflight handler for compat analyze route."""
-    from fastapi import Response
-    return Response(status_code=200)
+
 
 
 # PUBLIC_INTERFACE

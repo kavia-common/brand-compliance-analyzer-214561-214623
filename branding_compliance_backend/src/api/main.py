@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
@@ -31,41 +31,35 @@ app = FastAPI(
 state_store = StateStore()
 
 # Configure CORS: allow local/preview frontend origins and handle preflight for all routes
-default_origins = [
+# Allow the exact origin plus localhost variants and http(s)
+allowed_origins = {
     "https://vscode-internal-27606-beta.beta01.cloud.kavia.ai:3000",
     "http://localhost:3000",
+    "https://localhost:3000",
     "http://127.0.0.1:3000",
-]
+    "https://127.0.0.1:3000",
+}
 # Allow optional preview origin and extra origins via env
 preview_origin = os.getenv("PREVIEW_FRONTEND_ORIGIN")
 if preview_origin:
-    default_origins.append(preview_origin)
+    allowed_origins.add(preview_origin.strip())
 
-extra_origins = os.getenv("CORS_EXTRA_ORIGINS", "https://vscode-internal-27606-beta.beta01.cloud.kavia.ai:3000")
+extra_origins = os.getenv("CORS_EXTRA_ORIGINS", "")
 if extra_origins:
-    default_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
+    for o in extra_origins.split(","):
+        if o.strip():
+            allowed_origins.add(o.strip())
 
-# Add CORS middleware early so it applies to all mounted routers and routes
-# Per request: allow_credentials should be false unless cookies are needed (we don't use cookies)
+# Add CORS middleware AS FIRST MIDDLEWARE so it applies to all mounted routers and routes
+# We do not use cookies -> allow_credentials must be False
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=default_origins,
+    allow_origins=sorted(list(allowed_origins)),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
-
-# Explicit OPTIONS handler to guarantee a 200 for preflight on dynamic routes
-# FastAPI/Starlette CORS middleware typically handles this, but we add a generic fallback.
-# PUBLIC_INTERFACE
-@app.options("/{full_path:path}", include_in_schema=False)
-def preflight_options(full_path: str):
-    """Handle CORS preflight for all paths.
-
-    Returns:
-        Empty 200 OK response; CORS headers are added by CORSMiddleware.
-    """
-    return Response(status_code=200)
 
 # Mount a static files route to expose job outputs via HTTP
 # This maps to: {workspace_root}/jobs which contains <job_id>/outputs/...
@@ -93,6 +87,33 @@ def health_check():
     ready = state_store is not None
     return {"message": "Healthy", "state_store_ready": ready}
 
+# PUBLIC_INTERFACE
+@app.options("/", tags=["health"], summary="Root CORS Preflight", include_in_schema=False)
+def root_options():
+    """Handle CORS preflight for root."""
+    return Response(status_code=204)
+
+# PUBLIC_INTERFACE
+@app.get("/cors-check", tags=["health"], summary="CORS/Origin Echo")
+def cors_check(request: Request):
+    """Echo the Origin header and method to help diagnose browser CORS.
+
+    Returns:
+        JSON with origin and method; use OPTIONS to validate preflight behavior (204 expected).
+    """
+    return {
+        "ok": True,
+        "origin": request.headers.get("origin"),
+        "method": request.method,
+        "allowed_origins": sorted(list(allowed_origins)),
+        "allow_credentials": False,
+    }
+
+# PUBLIC_INTERFACE
+@app.options("/cors-check", tags=["health"], summary="CORS/Origin Preflight", include_in_schema=False)
+def cors_check_options():
+    """Preflight responder for cors-check; headers are added by CORSMiddleware."""
+    return Response(status_code=204)
 
 # PUBLIC_INTERFACE
 @app.get(
@@ -111,14 +132,14 @@ def api_notes():
         "downloads": "Use /api/v1/jobs/{job_id}/download?type=zip|report|both; server sets Content-Disposition and proper Content-Type.",
         "public_files": "Outputs are served under /outputs/{job_id}/outputs/<file_name> for direct browser access.",
         "cors": {
-            "allow_origins": default_origins,
+            "allow_origins": sorted(list(allowed_origins)),
             "allow_methods": ["*"],
             "allow_headers": ["*"],
+            "expose_headers": ["*"],
             "allow_credentials": False,
             "note": "Configure PREVIEW_FRONTEND_ORIGIN and CORS_EXTRA_ORIGINS env vars to add more origins.",
         },
     }
-
 
 # Mount API v1 routes
 app.include_router(v1_router)

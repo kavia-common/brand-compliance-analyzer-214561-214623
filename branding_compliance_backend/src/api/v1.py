@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, Request
 from fastapi.responses import FileResponse, JSONResponse
 import mimetypes
 import logging
@@ -334,12 +334,7 @@ def analyze_job(job_id: str, background: BackgroundTasks, request: Request, stat
         return JSONResponse(status_code=500, content={"error": True, "message": "Internal Server Error", "status": 500})
 
 
-# Explicit OPTIONS for the analyze endpoint to assist preflight with path params
-# PUBLIC_INTERFACE
-@router.options("/jobs/{job_id}/analyze", include_in_schema=False)
-def analyze_options(job_id: str):
-    """CORS preflight handler for analyze route."""
-    return Response(status_code=200)
+
 
 
 # PUBLIC_INTERFACE

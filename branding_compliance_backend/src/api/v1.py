@@ -306,13 +306,17 @@ def get_status(job_id: str, state: StateStore = Depends(get_state_store)):
 )
 def get_results(job_id: str, state: StateStore = Depends(get_state_store)):
     """Return current assets and issues arrays."""
+    from fastapi.encoders import jsonable_encoder
+
     if state.get_job(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return {
-        "assets": [a.model_dump() for a in state.list_assets(job_id)],
-        "issues": [i.model_dump() for i in state.list_issues(job_id)],
-        "summary": state.get_summary(job_id).model_dump() if state.get_summary(job_id) else None,
+    payload = {
+        "assets": [a.model_dump(mode="json") for a in state.list_assets(job_id)],
+        "issues": [i.model_dump(mode="json") for i in state.list_issues(job_id)],
+        "summary": state.get_summary(job_id).model_dump(mode="json") if state.get_summary(job_id) else None,
     }
+    # Final guard to ensure JSON-compatibility
+    return jsonable_encoder(payload)
 
 
 # PUBLIC_INTERFACE

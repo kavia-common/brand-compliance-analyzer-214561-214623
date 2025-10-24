@@ -48,9 +48,9 @@ class ReportService:
 
         summary = self.state.get_summary(job_id) or self.build_summary(job_id)
         details = {
-            "summary": summary.model_dump(),
-            "assets": [a.model_dump() for a in self.state.list_assets(job_id)],
-            "issues": [i.model_dump() for i in self.state.list_issues(job_id)],
+            "summary": summary.model_dump(mode="json"),
+            "assets": [a.model_dump(mode="json") for a in self.state.list_assets(job_id)],
+            "issues": [i.model_dump(mode="json") for i in self.state.list_issues(job_id)],
         }
 
         report_path = report_dir / "report.json"

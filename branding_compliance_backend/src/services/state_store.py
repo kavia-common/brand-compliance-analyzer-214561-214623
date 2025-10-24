@@ -17,11 +17,19 @@ from src.storage.workspace import get_job_workspace
 
 
 def _atomic_write_json(path: Path, data: Any) -> None:
-    """Write JSON to a file atomically using a temp file and replace."""
+    """Write JSON to a file atomically using a temp file and replace.
+
+    Ensures datetime and other non-JSON-native types are encoded as JSON-compatible
+    using FastAPI/Pydantic encoders.
+    """
+    from fastapi.encoders import jsonable_encoder
+
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Normalize data through jsonable_encoder to convert datetimes/enums to JSON-compatible types
+    encoded = jsonable_encoder(data)
     # Use text mode to ensure UTF-8 and pretty formatting
     with tempfile.NamedTemporaryFile("w", delete=False, dir=str(path.parent), encoding="utf-8") as tmp:
-        json.dump(data, tmp, ensure_ascii=False, indent=2)
+        json.dump(encoded, tmp, ensure_ascii=False, indent=2)
         tmp.flush()
         os.fsync(tmp.fileno())
         temp_name = tmp.name
@@ -84,7 +92,7 @@ class StateStore:
 
         try:
             # initialize companion files atomically
-            _atomic_write_json(paths["job_json"], job.model_dump())
+            _atomic_write_json(paths["job_json"], job.model_dump(mode="json"))
             _atomic_write_json(paths["assets_json"], [])
             _atomic_write_json(paths["issues_json"], [])
             _atomic_write_json(paths["summary_json"], None)
@@ -117,7 +125,7 @@ class StateStore:
             raise ValueError(f"Job {job_id} not found")
         job.status = status
         job.updated_at = datetime.utcnow()
-        _atomic_write_json(self._paths(job_id)["job_json"], job.model_dump())
+        _atomic_write_json(self._paths(job_id)["job_json"], job.model_dump(mode="json"))
         return job
 
     def _load_assets(self, job_id: str) -> List[Asset]:
@@ -126,7 +134,7 @@ class StateStore:
         return adapter.validate_python(raw)
 
     def _save_assets(self, job_id: str, assets: List[Asset]) -> None:
-        _atomic_write_json(self._paths(job_id)["assets_json"], [a.model_dump() for a in assets])
+        _atomic_write_json(self._paths(job_id)["assets_json"], [a.model_dump(mode="json") for a in assets])
 
     # PUBLIC_INTERFACE
     def add_assets(self, job_id: str, assets: List[Asset]) -> List[Asset]:
@@ -193,7 +201,7 @@ class StateStore:
         return adapter.validate_python(raw)
 
     def _save_issues(self, job_id: str, issues: List[Issue]) -> None:
-        _atomic_write_json(self._paths(job_id)["issues_json"], [i.model_dump() for i in issues])
+        _atomic_write_json(self._paths(job_id)["issues_json"], [i.model_dump(mode="json") for i in issues])
 
     # PUBLIC_INTERFACE
     def append_issues(self, job_id: str, issues: List[Issue]) -> List[Issue]:
@@ -219,7 +227,7 @@ class StateStore:
         if summary is None:
             _atomic_write_json(self._paths(job_id)["summary_json"], None)
         else:
-            _atomic_write_json(self._paths(job_id)["summary_json"], summary.model_dump())
+            _atomic_write_json(self._paths(job_id)["summary_json"], summary.model_dump(mode="json"))
 
     # PUBLIC_INTERFACE
     def save_summary(self, job_id: str, summary: ReportSummary) -> ReportSummary:

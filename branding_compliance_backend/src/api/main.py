@@ -29,27 +29,28 @@ app = FastAPI(
 # Global state store instance; in larger apps this would be managed via DI container
 state_store = StateStore()
 
-# Configure CORS: allow local frontend and optional preview origin
+# Configure CORS: allow local/preview frontend origins and handle preflight for all routes
 default_origins = [
     "https://vscode-internal-27606-beta.beta01.cloud.kavia.ai:3000",
-    "http://127.0.0.1:3000",
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
 ]
+# Allow optional preview origin and extra origins via env
 preview_origin = os.getenv("PREVIEW_FRONTEND_ORIGIN")
 if preview_origin:
     default_origins.append(preview_origin)
 
 extra_origins = os.getenv("CORS_EXTRA_ORIGINS", "https://vscode-internal-27606-beta.beta01.cloud.kavia.ai:3000")
 if extra_origins:
-    # comma-separated list
     default_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
 
+# Add CORS middleware early so it applies to all mounted routers and routes
 app.add_middleware(
     CORSMiddleware,
     allow_origins=default_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*", "Authorization", "Content-Type"],
 )
 
 # Mount a static files route to expose job outputs via HTTP

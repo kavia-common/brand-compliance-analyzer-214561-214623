@@ -27,7 +27,7 @@ state_store = StateStore()
 
 # Configure CORS: allow local frontend and optional preview origin
 default_origins = [
-    "http://localhost:3000",
+    "https://vscode-internal-34791-beta.beta01.cloud.kavia.ai:3000",
     "http://127.0.0.1:3000",
 ]
 preview_origin = os.getenv("PREVIEW_FRONTEND_ORIGIN")

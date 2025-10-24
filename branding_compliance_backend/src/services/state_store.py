@@ -42,13 +42,23 @@ def _safe_read_json(path: Path) -> Any:
                 return json.load(f)
         except json.JSONDecodeError:
             return None
+    except Exception:
+        # Any other IO error should be treated as missing to avoid 500
+        return None
 
 
 class StateStore:
     """Filesystem JSON state store for Jobs, Assets, Issues, and ReportSummary."""
 
     def __init__(self) -> None:
-        pass
+        # No in-memory state; filesystem-based.
+        # Ensures workspace root exists early.
+        from src.storage.workspace import get_root_workspace
+        try:
+            _ = get_root_workspace()
+        except Exception:
+            # Defer errors; health endpoint will reflect degraded state
+            pass
 
     def _paths(self, job_id: str) -> Dict[str, Path]:
         w = get_job_workspace(job_id)
@@ -62,18 +72,32 @@ class StateStore:
     # PUBLIC_INTERFACE
     def create_job(self, job: Job) -> Job:
         """Create a new job and persist its initial JSON state."""
+        # Ensure workspace root and job directories exist
+        w = get_job_workspace(job.id)
         paths = self._paths(job.id)
         if paths["job_json"].exists():
             raise ValueError(f"Job {job.id} already exists")
 
+        # Normalize and set timestamps
         job.created_at = datetime.utcnow()
         job.updated_at = job.created_at
 
-        # initialize companion files
-        _atomic_write_json(paths["job_json"], job.model_dump())
-        _atomic_write_json(paths["assets_json"], [])
-        _atomic_write_json(paths["issues_json"], [])
-        _atomic_write_json(paths["summary_json"], None)
+        try:
+            # initialize companion files atomically
+            _atomic_write_json(paths["job_json"], job.model_dump())
+            _atomic_write_json(paths["assets_json"], [])
+            _atomic_write_json(paths["issues_json"], [])
+            _atomic_write_json(paths["summary_json"], None)
+        except Exception as e:
+            # Attempt cleanup of a partially created job folder to avoid corrupt state
+            try:
+                # Do not delete entire root, only specific job dir
+                import shutil
+                shutil.rmtree(w["job"], ignore_errors=True)
+            except Exception:
+                # Ignore cleanup errors
+                pass
+            raise e
         return job
 
     # PUBLIC_INTERFACE

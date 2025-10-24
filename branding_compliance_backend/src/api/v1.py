@@ -32,18 +32,24 @@ router = APIRouter(
 
 # Request/Response Models
 
+# PUBLIC_INTERFACE
 class CreateJobRequest(BaseModel):
-    """Request to create a job."""
+    """Request to create a job.
+
+    All fields are optional and default to None.
+    """
     owner: Optional[StrictStr] = Field(None, description="Owner/user id")
     title: Optional[StrictStr] = Field(None, description="Optional job title")
     description: Optional[StrictStr] = Field(None, description="Job description")
 
 
+# PUBLIC_INTERFACE
 class CreateJobResponse(BaseModel):
     """Response containing created job ID."""
     job_id: StrictStr = Field(..., description="Created job id")
 
 
+# PUBLIC_INTERFACE
 class StatusResponse(BaseModel):
     """Response model for job status."""
     job_id: str
@@ -76,6 +82,7 @@ class BatchFixRequest(BaseModel):
     description="Create a new job and initialize workspace JSON files.",
     response_model=CreateJobResponse,
     tags=["jobs"],
+    status_code=201,
 )
 def create_job(data: CreateJobRequest, state: StateStore = Depends(get_state_store)):
     """Create a job with optional title and metadata.

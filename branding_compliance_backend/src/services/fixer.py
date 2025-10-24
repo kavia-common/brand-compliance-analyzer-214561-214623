@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import List
@@ -9,19 +10,50 @@ from src.models.issue import Issue, IssueStatus
 from src.models.job import JobStatus
 from src.services.state_store import StateStore
 from src.storage.workspace import get_job_workspace
+from src.services.vision import VisionUtils, DetectorConfig, Detection
 
 
 class FixerService:
-    """Applies automatic fixes to assets.
-
-    This is a stubbed implementation that "fixes" by copying assets to outputs/.
-    """
+    """Applies automatic fixes to assets by replacing detected old logos with the new logo."""
 
     def __init__(self, state_store: StateStore) -> None:
         self.state = state_store
 
+    def _load_detections_for_asset(self, job_id: str, asset_rel_path: str) -> List[Detection]:
+        """Read detections from jobs/{id}/work/detections.json for a single asset."""
+        w = get_job_workspace(job_id)
+        det_path = w["job"] / "work" / "detections.json"
+        if not det_path.exists():
+            return []
+        try:
+            raw = json.loads(det_path.read_text(encoding="utf-8"))
+            entries = raw.get(asset_rel_path, [])
+            out: List[Detection] = []
+            for e in entries:
+                points = e.get("points") or []
+                out.append(Detection(
+                    x=float(e.get("x", 0.0)),
+                    y=float(e.get("y", 0.0)),
+                    width=float(e.get("width", 0.0)),
+                    height=float(e.get("height", 0.0)),
+                    score=float(e.get("score", 0.0)),
+                    method=str(e.get("method", "template")),
+                    points=[(float(p[0]), float(p[1])) for p in points] if points else None
+                ))
+            return out
+        except Exception:
+            return []
+
+    def _choose_new_logo(self, job_id: str) -> Path | None:
+        w = get_job_workspace(job_id)
+        new_dir = w["analysis"] / "new_brand"
+        if not new_dir.exists():
+            return None
+        files = [p for p in new_dir.iterdir() if p.is_file()]
+        return files[0] if files else None
+
     def fix_asset(self, job_id: str, asset_id: str) -> Path:
-        """Fix a single asset and place result in outputs/."""
+        """Fix a single asset and place result in outputs/ using detections + new logo."""
         w = get_job_workspace(job_id)
         job = self.state.get_job(job_id)
         if job is None:
@@ -36,8 +68,16 @@ class FixerService:
         outputs = w["outputs"]
         outputs.mkdir(parents=True, exist_ok=True)
         dst = outputs / f"fixed_{asset.original_filename}"
-        if src.exists():
-            shutil.copy2(src, dst)
+
+        # If detections/new logo are missing, fallback to copy to keep flow working
+        dets = self._load_detections_for_asset(job_id, asset.rel_path)
+        new_logo = self._choose_new_logo(job_id)
+        if src.exists() and dets and new_logo and new_logo.exists():
+            cfg = DetectorConfig()
+            VisionUtils.replace_logo(src, new_logo, dets, dst, feather=6, quality_mode=cfg.quality)
+        else:
+            if src.exists():
+                shutil.copy2(src, dst)
 
         # mark issues for this asset as fixed
         issues = self.state.list_issues(job_id)
@@ -57,7 +97,7 @@ class FixerService:
         return dst
 
     def fix_all(self, job_id: str) -> List[Path]:
-        """Fix all assets that have open issues."""
+        """Fix all assets that have open issues using stored detections."""
         w = get_job_workspace(job_id)
         outputs = w["outputs"]
         outputs.mkdir(parents=True, exist_ok=True)
@@ -66,7 +106,7 @@ class FixerService:
         issues = self.state.list_issues(job_id)
         assets = self.state.list_assets(job_id)
         by_asset = {a.id: a for a in assets}
-        affected_assets = {i.asset_id for i in issues}
+        affected_assets = {i.asset_id for i in issues if i.status != IssueStatus.fixed}
 
         for aid in affected_assets:
             a = by_asset.get(aid)

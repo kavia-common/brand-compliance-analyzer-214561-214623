@@ -19,6 +19,8 @@ Do not commit secrets. Place environment variables in a local `.env` read by uvi
 - BRANDING_WS_ROOT: Optional path for workspace storage (default: ./workspace)
 - PREVIEW_FRONTEND_ORIGIN: Optional additional allowed CORS origin (e.g. preview URL)
 - CORS_EXTRA_ORIGINS: Optional comma-separated list of extra CORS origins
+- DETECTOR: template|orb|hybrid (default: hybrid)
+- QUALITY: fast|balanced|best (default: balanced)
 
 ## Download/Preview headers
 

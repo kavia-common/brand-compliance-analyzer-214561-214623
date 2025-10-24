@@ -325,7 +325,7 @@ async def upload_new_brand(job_id: str, file: UploadFile = File(...), state: Sta
 @router.post(
     "/jobs/{job_id}/analyze",
     summary="Trigger Analysis",
-    description="Start analysis in background. Progress can be checked via status endpoint.",
+    description="Run logo detection pipeline. Persists detections to work/detections.json and generates overlays. Progress available via status.",
     tags=["jobs"],
 )
 def analyze_job(job_id: str, background: BackgroundTasks, request: Request, state: StateStore = Depends(get_state_store)):

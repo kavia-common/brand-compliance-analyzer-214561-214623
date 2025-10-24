@@ -4,20 +4,21 @@ import hashlib
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Dict
 
-from src.models.asset import Asset, AssetStatus, AssetType
+from src.models.asset import Asset, AssetStatus, AssetType, BoundingBox
 from src.models.issue import Issue, IssueSeverity, IssueType
 from src.models.job import JobStatus
 from src.services.state_store import StateStore
 from src.storage.workspace import get_job_workspace
+from src.services.vision import VisionUtils, DetectorConfig, Detection
 
 
 class AnalyzerService:
     """Performs analysis for a job's uploaded assets.
 
-    This is a stubbed implementation that simulates compliance checks.
-    Replace with CV/OCR logic as needed.
+    Uses OpenCV/Pillow-based detection utilities to find old logos, persists detections,
+    and generates lightweight overlay previews.
     """
 
     def __init__(self, state_store: StateStore) -> None:
@@ -64,12 +65,52 @@ class AnalyzerService:
             self.state.add_assets(job_id, new_assets)
         return self.state.list_assets(job_id)
 
-    def analyze_job(self, job_id: str) -> None:
-        """Run analysis for all assets of a job.
+    def _choose_old_logo_template(self, job_id: str) -> Path | None:
+        """Pick the first uploaded old brand image as template."""
+        w = get_job_workspace(job_id)
+        old_dir = w["analysis"] / "old_brand"
+        if not old_dir.exists():
+            return None
+        cands = [p for p in old_dir.iterdir() if p.is_file()]
+        return cands[0] if cands else None
 
-        This mutates state: updates job status, marks assets as analyzed or failed,
-        and appends stubbed issues.
-        """
+    def _save_detections(self, job_id: str, det_map: Dict[str, List[Detection]]) -> Path:
+        w = get_job_workspace(job_id)
+        work_dir = w["job"] / "work"
+        out = work_dir / "detections.json"
+        VisionUtils.save_detections_json(det_map, out)
+        return out
+
+    def _overlay_preview(self, job_id: str, asset_path: Path, detections: List[Detection]) -> None:
+        """Create a simple overlay PNG drawing rectangles on detections."""
+        try:
+            from PIL import Image, ImageDraw
+        except Exception:
+            return
+        try:
+            with Image.open(asset_path) as im:
+                im = im.convert("RGBA")
+                overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
+                draw = ImageDraw.Draw(overlay)
+                for d in detections:
+                    x1, y1 = d.x, d.y
+                    x2, y2 = d.x + d.width, d.y + d.height
+                    # red rectangle with alpha
+                    draw.rectangle([x1, y1, x2, y2], outline=(255, 0, 0, 255), width=4)
+                    # confidence text
+                    draw.text((x1 + 2, max(0, y1 - 12)), f"{d.method}:{d.score:.2f}", fill=(255, 0, 0, 255))
+                out = Image.alpha_composite(im, overlay)
+                w = get_job_workspace(job_id)
+                previews: Path = w["previews"]
+                previews.mkdir(parents=True, exist_ok=True)
+                name = f"overlay_{Path(asset_path.name).stem}.png"
+                out.save(previews / name, format="PNG")
+        except Exception:
+            # best-effort only
+            return
+
+    def analyze_job(self, job_id: str) -> None:
+        """Run analysis for all assets of a job using CV-based detection and persist results."""
         job = self.state.get_job(job_id)
         if job is None:
             raise ValueError(f"Job {job_id} not found")
@@ -77,32 +118,45 @@ class AnalyzerService:
         self.state.update_job_status(job_id, JobStatus.analyzing)
         assets = self._ensure_assets_list(job_id)
 
+        old_logo_template = self._choose_old_logo_template(job_id)
+        cfg = DetectorConfig()
+
+        detections_map: Dict[str, List[Detection]] = {}
         issues_to_add: List[Issue] = []
+
         for a in assets:
             try:
-                # Simple heuristic: flag potential "old brand" if filename contains "old" or "legacy"
-                if any(k in a.original_filename.lower() for k in ["old", "legacy"]):
-                    iid = str(uuid.uuid4())
-                    issues_to_add.append(
-                        Issue(
-                            id=iid,
-                            job_id=job_id,
-                            asset_id=a.id,
-                            type=IssueType.old_logo,
-                            severity=IssueSeverity.high,
-                            message=f"Potential old brand detected in {a.original_filename}",
-                            bbox=None,
-                            score=0.95,
-                            suggestions=["Replace with new brand asset."],
-                            meta={"rule": "filename_contains_old_or_legacy"},
-                        )
-                    )
-                # Another simple heuristic: if the file hash ends with '0', create a low severity color mismatch
                 w = get_job_workspace(job_id)
                 fpath = w["job"] / a.rel_path
-                if fpath.exists():
-                    h = hashlib.md5(fpath.read_bytes()).hexdigest()
-                    if h.endswith("0"):
+                if a.type == AssetType.image and old_logo_template and fpath.exists():
+                    dets = VisionUtils.detect_old_logo(fpath, old_logo_template, cfg)
+                    detections_map[a.rel_path] = dets
+                    # generate overlay preview
+                    self._overlay_preview(job_id, fpath, dets)
+                    # convert detections to issues
+                    for d in dets:
+                        iid = str(uuid.uuid4())
+                        bbox = BoundingBox(x=d.x, y=d.y, width=d.width, height=d.height, normalized=False)
+                        issues_to_add.append(
+                            Issue(
+                                id=iid,
+                                job_id=job_id,
+                                asset_id=a.id,
+                                type=IssueType.old_logo,
+                                severity=IssueSeverity.high if d.score >= 0.8 else IssueSeverity.medium,
+                                message=f"Old logo detected ({d.method})",
+                                bbox=bbox,
+                                score=d.score,
+                                suggestions=["Replace with new brand asset."],
+                                meta={"method": d.method, "points": d.points or []},
+                            )
+                        )
+                else:
+                    # Keep heuristic to still demonstrate non-logo issues
+                    h = None
+                    if fpath.exists():
+                        h = hashlib.md5(fpath.read_bytes()).hexdigest()
+                    if h and h.endswith("0"):
                         iid = str(uuid.uuid4())
                         issues_to_add.append(
                             Issue(
@@ -118,22 +172,26 @@ class AnalyzerService:
                                 meta={"hash_tail": h[-4:]},
                             )
                         )
+                # mark analyzed
                 self.state.update_asset_status(job_id, a.id, AssetStatus.analyzed)
             except Exception:
                 # mark asset failure
                 self.state.update_asset_status(job_id, a.id, AssetStatus.failed)
 
+        # persist detections JSON
+        if detections_map:
+            self._save_detections(job_id, detections_map)
+
         if issues_to_add:
             self.state.append_issues(job_id, issues_to_add)
 
-        # After analysis, move to preview generation (placeholder step)
+        # After analysis, move to preview generation (marker)
         self.state.update_job_status(job_id, JobStatus.generating_previews)
 
     def generate_previews(self, job_id: str) -> None:
-        """Stub preview generation by touching placeholder preview files."""
+        """Mark previews ready by writing a timestamp marker."""
         w = get_job_workspace(job_id)
         previews: Path = w["previews"]
         previews.mkdir(parents=True, exist_ok=True)
-        # Create a simple updated timestamp marker
         marker = previews / "PREVIEWS_READY.txt"
         marker.write_text(f"Previews generated at {datetime.utcnow().isoformat()}\n", encoding="utf-8")

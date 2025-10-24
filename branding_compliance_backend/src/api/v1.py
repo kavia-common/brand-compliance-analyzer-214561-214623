@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, Request
+from typing import List
 from fastapi.responses import FileResponse, JSONResponse
 import mimetypes
 import logging
@@ -284,6 +285,96 @@ async def upload_assets_zip(job_id: str, file: UploadFile = File(...), state: St
 
     state.update_job_status(job_id, JobStatus.uploading)
     return {"message": "Assets uploaded", "job_id": job_id}
+
+# PUBLIC_INTERFACE
+@router.post(
+    "/jobs/{job_id}/assets",
+    summary="Upload Assets (multipart)",
+    description=(
+        "Accepts multipart form-data for images/documents and brand logos.\n"
+        "Fields:\n"
+        "- images[]: one or more files to analyze, saved under uploads/\n"
+        "- old_logo: optional file saved under analysis/old_brand/\n"
+        "- new_logo: optional file saved under analysis/new_brand/\n"
+        "Responds with counts and saved relative paths."
+    ),
+    tags=["assets"],
+)
+async def upload_assets_multipart(
+    job_id: str,
+    request: Request,
+    images: List[UploadFile] = File(default_factory=list, description="One or more input assets (images/docs)"),
+    old_logo: UploadFile | None = File(default=None, description="Old brand/logo image"),
+    new_logo: UploadFile | None = File(default=None, description="New brand/logo image"),
+    state: StateStore = Depends(get_state_store),
+):
+    """
+    Handle multipart uploads for assets and optional logo references.
+
+    Saves:
+      - images[] to jobs/{job_id}/uploads/
+      - old_logo to jobs/{job_id}/analysis/old_brand/
+      - new_logo to jobs/{job_id}/analysis/new_brand/
+    Returns JSON with saved paths and counts. Errors include structured JSON messages.
+    """
+    # Validate job exists
+    if state.get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail=error_response("job_not_found", "Job not found", {"job_id": job_id}, 404))
+
+    w = get_job_workspace(job_id)
+    saved_images: list[str] = []
+    saved_old: str | None = None
+    saved_new: str | None = None
+
+    # Save images[]
+    if images:
+        for f in images:
+            try:
+                target = w["uploads"] / f.filename
+                _save_upload_to(target, f)
+                saved_images.append(str(target.relative_to(w["job"])))
+            except Exception as e:
+                # Continue saving others but note failure
+                logging.getLogger("api.upload").exception("Failed to save image %s: %s", f.filename, e)
+
+    # Save old_logo
+    if old_logo is not None:
+        try:
+            target_old = w["analysis"] / "old_brand" / old_logo.filename
+            _save_upload_to(target_old, old_logo)
+            saved_old = str(target_old.relative_to(w["job"]))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=error_response("save_failed", "Failed to save old_logo", {"error": str(e)}, 500))
+
+    # Save new_logo
+    if new_logo is not None:
+        try:
+            target_new = w["analysis"] / "new_brand" / new_logo.filename
+            _save_upload_to(target_new, new_logo)
+            saved_new = str(target_new.relative_to(w["job"]))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=error_response("save_failed", "Failed to save new_logo", {"error": str(e)}, 500))
+
+    # Update status if any images were uploaded
+    if saved_images:
+        try:
+            state.update_job_status(job_id, JobStatus.uploading)
+        except Exception:
+            pass
+
+    return {
+        "message": "Upload complete",
+        "job_id": job_id,
+        "saved": {
+            "images": saved_images,
+            "old_logo": saved_old,
+            "new_logo": saved_new,
+        },
+        "counts": {
+            "images": len(saved_images),
+            "logos": int(saved_old is not None) + int(saved_new is not None),
+        },
+    }
 
 
 # PUBLIC_INTERFACE

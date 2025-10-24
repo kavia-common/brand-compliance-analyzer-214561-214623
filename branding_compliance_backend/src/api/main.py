@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api.v1 import router as v1_router
 from src.services.state_store import StateStore
 
 app = FastAPI(
@@ -39,3 +40,24 @@ def health_check():
     # We avoid creating any files here; creation occurs when jobs are created.
     ready = state_store is not None
     return {"message": "Healthy", "state_store_ready": ready}
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/api/v1/docs/notes",
+    tags=["health"],
+    summary="API Notes",
+)
+def api_notes():
+    """Provide usage notes for API clients.
+
+    Includes info about background tasks and preview endpoints.
+    """
+    return {
+        "notes": "Analysis runs asynchronously via BackgroundTasks. Poll /api/v1/jobs/{job_id}/status and /results.",
+        "previews": "Use /api/v1/jobs/{job_id}/assets/{asset_id}/preview?view=original|overlay|fixed",
+    }
+
+
+# Mount API v1 routes
+app.include_router(v1_router)

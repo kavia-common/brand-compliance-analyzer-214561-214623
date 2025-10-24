@@ -4,6 +4,7 @@ import os
 import logging
 
 from src.api.v1 import router as v1_router
+from src.api.compat import router as compat_router
 from src.services.state_store import StateStore
 
 # Basic logging setup
@@ -27,14 +28,15 @@ state_store = StateStore()
 
 # Configure CORS: allow local frontend and optional preview origin
 default_origins = [
-    "https://vscode-internal-37364-beta.beta01.cloud.kavia.ai:3000",
+    "https://vscode-internal-11589-beta.beta01.cloud.kavia.ai:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3000",
 ]
 preview_origin = os.getenv("PREVIEW_FRONTEND_ORIGIN")
 if preview_origin:
     default_origins.append(preview_origin)
 
-extra_origins = os.getenv("CORS_EXTRA_ORIGINS", "https://vscode-internal-37364-beta.beta01.cloud.kavia.ai:3000")
+extra_origins = os.getenv("CORS_EXTRA_ORIGINS", "https://vscode-internal-11589-beta.beta01.cloud.kavia.ai:3000")
 if extra_origins:
     # comma-separated list
     default_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
@@ -83,6 +85,10 @@ def api_notes():
 
 # Mount API v1 routes
 app.include_router(v1_router)
+
+# Mount root-level compatibility routes so frontend calling "/jobs" works
+# Note: OpenAPI docs focus on /api/v1; these are provided for backward/compat use.
+app.include_router(compat_router)
 
 # PUBLIC_INTERFACE
 @app.get("/api/v1/health", tags=["health"], summary="Service Health")

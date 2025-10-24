@@ -36,9 +36,12 @@ def _safe_read_json(path: Path) -> Any:
         with path.open("r", encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError:
-        # Attempt to read again in case of concurrent write, otherwise surface error
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        # Attempt to read again in case of concurrent write; if still bad, treat as missing
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return None
 
 
 class StateStore:

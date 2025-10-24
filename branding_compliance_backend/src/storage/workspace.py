@@ -18,7 +18,14 @@ def get_root_workspace() -> Path:
     else:
         # Default relative path within container working directory
         root = Path("workspace")
-    root.mkdir(parents=True, exist_ok=True)
+    # Ensure directory exists with permissive but safe defaults
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        # Fall back to a temp-like workspace under current working directory
+        fallback = Path("./workspace")
+        fallback.mkdir(parents=True, exist_ok=True)
+        root = fallback
     return root
 
 

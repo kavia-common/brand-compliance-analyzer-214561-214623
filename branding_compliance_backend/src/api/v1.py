@@ -9,6 +9,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 import mimetypes
+import logging
 from pydantic import BaseModel, Field, StrictStr
 
 from src.models.job import Job, JobStatus
@@ -44,15 +45,16 @@ class CreateJobResponse(BaseModel):
 
 
 class StatusResponse(BaseModel):
-    job_id: StrictStr
-    status: StrictStr
+    """Response model for job status."""
+    job_id: str
+    status: str
     total_assets: int
     analyzed_assets: int
     failed_assets: int
     progress_percent: float
     issues_total: int
     issues_high_or_above: int
-    updated_at: StrictStr
+    updated_at: str
 
 
 class FixAssetRequest(BaseModel):
@@ -81,15 +83,32 @@ def create_job(data: CreateJobRequest, state: StateStore = Depends(get_state_sto
     Returns:
         CreateJobResponse with job_id.
     """
+    logger = logging.getLogger("api.create_job")
     job_id = str(uuid.uuid4())
-    job = Job(
-        id=job_id,
-        status=JobStatus.created,
-        owner=data.owner,
-        title=data.title,
-        description=data.description,
-    )
-    state.create_job(job)
+    try:
+        job = Job(
+            id=job_id,
+            status=JobStatus.created,
+            owner=data.owner,
+            title=data.title,
+            description=data.description,
+        )
+    except Exception as e:
+        # Pydantic validation or enum error
+        logger.exception("Invalid job payload: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid request: {e}")
+
+    try:
+        state.create_job(job)
+    except ValueError as ve:
+        # Duplicate or state-related validation
+        logger.warning("Job creation failed (bad request): %s", ve)
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.exception("Unexpected error creating job: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to create job due to server error")
+
+    logger.info("Job created: %s", job_id)
     return CreateJobResponse(job_id=job_id)
 
 
@@ -112,8 +131,11 @@ def delete_job(job_id: str, state: StateStore = Depends(get_state_store)):
 
 def _save_upload_to(path: Path, file: UploadFile) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as f:
+    # Atomic write: write to tmp in same dir then replace
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
+    tmp_path.replace(path)
 
 
 # PUBLIC_INTERFACE

@@ -1,9 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
+import logging
 
 from src.api.v1 import router as v1_router
 from src.services.state_store import StateStore
+
+# Basic logging setup
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title="Branding Compliance Backend",
@@ -79,3 +83,20 @@ def api_notes():
 
 # Mount API v1 routes
 app.include_router(v1_router)
+
+# PUBLIC_INTERFACE
+@app.get("/api/v1/health", tags=["health"], summary="Service Health")
+def api_health():
+    """Service-level health check for API v1.
+
+    Returns:
+        JSON with status and readiness including workspace root and state store readiness.
+    """
+    try:
+        from src.storage.workspace import get_root_workspace  # local import to avoid circulars at import time
+        root = str(get_root_workspace())
+        ws_ok = True
+    except Exception:
+        root = None
+        ws_ok = False
+    return {"status": "ok" if ws_ok else "degraded", "state_store_ready": state_store is not None, "workspace_root": root}

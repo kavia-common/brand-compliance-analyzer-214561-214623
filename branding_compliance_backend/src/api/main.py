@@ -92,11 +92,31 @@ def api_health():
     Returns:
         JSON with status and readiness including workspace root and state store readiness.
     """
+    import logging
+
+    logger = logging.getLogger("api.health")
+    ws_ok = False
+    root_str = None
+    disk_write_ok = False
     try:
         from src.storage.workspace import get_root_workspace  # local import to avoid circulars at import time
-        root = str(get_root_workspace())
+        root = get_root_workspace()
+        root_str = str(root)
+        # Disk write check: touch a temp file under workspace root
+        probe = root / ".health_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        disk_write_ok = True
         ws_ok = True
-    except Exception:
-        root = None
+        logger.info("Health workspace root resolved: %s", root_str)
+    except Exception as e:
+        logger.exception("Health check workspace failure: %s", e)
         ws_ok = False
-    return {"status": "ok" if ws_ok else "degraded", "state_store_ready": state_store is not None, "workspace_root": root}
+
+    status = "ok" if (ws_ok and disk_write_ok) else "degraded"
+    return {
+        "status": status,
+        "state_store_ready": state_store is not None,
+        "workspace_root": root_str,
+        "disk_write_ok": disk_write_ok,
+    }

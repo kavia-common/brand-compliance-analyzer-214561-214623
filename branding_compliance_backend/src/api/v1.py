@@ -91,7 +91,14 @@ def create_job(data: CreateJobRequest, state: StateStore = Depends(get_state_sto
         CreateJobResponse with job_id.
     """
     logger = logging.getLogger("api.create_job")
-    job_id = str(uuid.uuid4())
+    # (a) job_id generation and validation
+    try:
+        job_id = str(uuid.uuid4())
+    except Exception as e:
+        logger.exception("Failed to generate job_id: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to generate job id")
+
+    # Build Job model and validate input
     try:
         job = Job(
             id=job_id,
@@ -105,18 +112,56 @@ def create_job(data: CreateJobRequest, state: StateStore = Depends(get_state_sto
         logger.exception("Invalid job payload: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid request: {e}")
 
+    # (a) workspace root resolution with verbose logs
+    try:
+        from src.storage.workspace import get_root_workspace, get_job_workspace
+        ws_root = get_root_workspace()
+        job_ws = get_job_workspace(job_id)
+        logger.info(
+            "Resolved workspace: root=%s job_dir=%s",
+            ws_root, job_ws["job"]
+        )
+        # temp disk write check in job dir to ensure permissions
+        probe = job_ws["job"] / ".create_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except HTTPException:
+        # rethrow http exceptions if any
+        raise
+    except ValueError as ve:
+        # input-related path issues should be 400 if job_id invalid chars (unlikely)
+        logger.exception("Invalid path parameters for job: %s", ve)
+        raise HTTPException(status_code=400, detail=str(ve))
+    except PermissionError as pe:
+        logger.exception("Permission error preparing workspace: %s", pe)
+        raise HTTPException(status_code=409, detail="Workspace not writable")
+    except Exception as e:
+        logger.exception("Error resolving workspace: %s", e)
+        # keep going; state.create_job will likely fail and we log there too
+
+    # (c) atomic JSON writes via state store
     try:
         state.create_job(job)
     except ValueError as ve:
         # Duplicate or state-related validation
         logger.warning("Job creation failed (bad request): %s", ve)
         raise HTTPException(status_code=400, detail=str(ve))
+    except PermissionError as pe:
+        logger.exception("Permission error writing job JSON: %s", pe)
+        raise HTTPException(status_code=409, detail="Workspace not writable")
     except Exception as e:
-        logger.exception("Unexpected error creating job: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to create job due to server error")
+        logger.exception("Unexpected error creating job (IO/JSON): %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # (d) response model serialization with guard
+    try:
+        resp = CreateJobResponse(job_id=job_id)
+    except Exception as e:
+        logger.exception("Failed to serialize CreateJobResponse: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to serialize response")
 
     logger.info("Job created: %s", job_id)
-    return CreateJobResponse(job_id=job_id)
+    return resp
 
 
 # PUBLIC_INTERFACE

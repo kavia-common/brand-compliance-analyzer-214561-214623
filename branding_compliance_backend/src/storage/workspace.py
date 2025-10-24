@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from typing import Dict
+
+logger = logging.getLogger("storage.workspace")
 
 
 # PUBLIC_INTERFACE
@@ -10,23 +13,38 @@ def get_root_workspace() -> Path:
     """Return the root workspace path for job storage.
 
     This reads BRANDING_WS_ROOT from environment variables if set; otherwise
-    defaults to a 'workspace' folder under the project root.
+    defaults to a container-writable path.
+
+    Resolution order:
+      1) BRANDING_WS_ROOT if set and creatable
+      2) /tmp/branding_workspace (container-writable)
+      3) ./workspace (as last resort)
+
+    Adds verbose logs to help diagnose permission/path issues.
     """
     env_root = os.getenv("BRANDING_WS_ROOT")
+    candidates = []
     if env_root:
-        root = Path(env_root)
-    else:
-        # Default relative path within container working directory
-        root = Path("workspace")
-    # Ensure directory exists with permissive but safe defaults
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-    except PermissionError:
-        # Fall back to a temp-like workspace under current working directory
-        fallback = Path("./workspace")
-        fallback.mkdir(parents=True, exist_ok=True)
-        root = fallback
-    return root
+        candidates.append(Path(env_root))
+    # Prefer container-writable temp dir
+    candidates.append(Path("/tmp/branding_workspace"))
+    # Fallback to relative workspace
+    candidates.append(Path("./workspace"))
+
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            # extra: test we can write a temp file
+            probe = cand / ".ws_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            logger.info("Workspace root resolved OK: %s", cand)
+            return cand
+        except Exception as e:
+            logger.exception("Workspace root candidate failed: %s error=%s", cand, e)
+
+    # If all candidates failed, raise to surface in health and logs
+    raise RuntimeError("Unable to create or access any workspace root directory")
 
 
 # PUBLIC_INTERFACE

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 import zipfile
@@ -13,6 +14,7 @@ import logging
 import os
 from pydantic import BaseModel, Field, StrictStr
 
+from src.api.errors import error_response
 from src.models.job import Job, JobStatus
 from src.services.analyzer import AnalyzerService
 from src.services.fixer import FixerService
@@ -29,6 +31,34 @@ router = APIRouter(
     prefix="/api/v1",
     tags=["jobs", "assets", "report"],
 )
+
+_UUID_RE = re.compile(r"^[0-9a-fA-F-]{32,36}$")
+
+
+def _validate_job_id(job_id: str) -> None:
+    """Lightweight validation for job_id format to catch obvious errors early."""
+    if not job_id or not isinstance(job_id, str):
+        raise HTTPException(
+            status_code=400,
+            detail=error_response(
+                "invalid_job_id",
+                "job_id must be a non-empty string",
+                {"job_id": job_id},
+                status_code=400,
+            ),
+        )
+    if not _UUID_RE.match(job_id):
+        # We accept hyphenated UUIDs; avoid over-strict parsing, just ensure safe charset/length
+        raise HTTPException(
+            status_code=400,
+            detail=error_response(
+                "invalid_job_id_format",
+                "job_id format appears invalid",
+                {"job_id": job_id},
+                status_code=400,
+            ),
+        )
+
 
 def _build_public_url_for_output(request: Request, output_path: Path) -> str | None:
     """
@@ -299,42 +329,156 @@ async def upload_new_brand(job_id: str, file: UploadFile = File(...), state: Sta
     tags=["jobs"],
 )
 def analyze_job(job_id: str, background: BackgroundTasks, request: Request, state: StateStore = Depends(get_state_store)):
-    """Trigger background analysis and preview generation."""
+    """Trigger background analysis and preview generation.
+
+    Validates job_id and job state, ensures required inputs exist, and schedules background work.
+    Returns:
+        200 on queued with a structured payload,
+        4xx with structured error JSON for invalid job/state/inputs,
+        5xx only for unexpected errors (structured).
+    """
     log = logging.getLogger("api.analyze")
+    origin = request.headers.get("origin")
+    phase = "validate"
     try:
-        origin = request.headers.get("origin")
-        log.info("Analyze request: job_id=%s origin=%s headers=%s", job_id, origin, dict(request.headers))
+        # Structured entry log
+        log.info("analyze:start job_id=%s phase=%s origin=%s", job_id, phase, origin)
+
+        # Validate job_id format early (unit-friendly and avoids path traversal)
+        _validate_job_id(job_id)
+
+        # Load job
+        phase = "load_job"
         job = state.get_job(job_id)
         if job is None:
-            log.warning("Analyze request for missing job: %s", job_id)
-            return JSONResponse(status_code=404, content={"error": True, "message": "Job not found", "status": 404})
+            log.warning("analyze:missing_job job_id=%s phase=%s", job_id, phase)
+            return JSONResponse(
+                status_code=404,
+                content=error_response("job_not_found", "Job not found", {"job_id": job_id}, status_code=404),
+            )
 
+        # Check inputs existence to avoid heavy processing when uploads are missing
+        phase = "check_inputs"
+        w = get_job_workspace(job_id)
+        uploads = w["uploads"]
+        if not uploads.exists():
+            log.info("analyze:no_uploads job_id=%s phase=%s", job_id, phase)
+            # Early return: unit-friendly lightweight check
+            return JSONResponse(
+                status_code=400,
+                content=error_response(
+                    "missing_inputs",
+                    "No assets uploaded yet. Please upload a zip before analyzing.",
+                    {"job_id": job_id},
+                    status_code=400,
+                ),
+            )
+        # Guard against empty uploads folder
+        has_files = any(p.is_file() for p in uploads.rglob("*"))
+        if not has_files:
+            log.info("analyze:empty_uploads job_id=%s phase=%s", job_id, phase)
+            return JSONResponse(
+                status_code=400,
+                content=error_response(
+                    "missing_inputs",
+                    "Uploads folder is empty. Ensure your zip contained files.",
+                    {"job_id": job_id},
+                    status_code=400,
+                ),
+            )
+
+        # Ensure job state is appropriate; allow re-queue from created/uploading/failed/cancelled
+        phase = "validate_state"
+        if job.status not in {
+            JobStatus.created,
+            JobStatus.uploading,
+            JobStatus.failed,
+            JobStatus.cancelled,
+            JobStatus.completed,
+            JobStatus.summarizing,
+        }:
+            # If already queued/analyzing/generating_previews/fixing, block duplicate trigger
+            if job.status in {JobStatus.queued, JobStatus.analyzing, JobStatus.generating_previews, JobStatus.fixing}:
+                log.info("analyze:already_in_progress job_id=%s state=%s", job_id, job.status.value)
+                return JSONResponse(
+                    status_code=409,
+                    content=error_response(
+                        "job_in_progress",
+                        f"Job is already in progress: {job.status.value}",
+                        {"job_id": job_id, "status": job.status.value},
+                        status_code=409,
+                    ),
+                )
+
+        # Schedule background work
+        phase = "schedule"
         analyzer = AnalyzerService(state)
 
         def run():
+            sublog = logging.getLogger("api.analyze.worker")
             try:
+                sublog.info("analyze:worker_start job_id=%s", job_id)
+                state.update_job_status(job_id, JobStatus.analyzing)
                 analyzer.analyze_job(job_id)
+                state.update_job_status(job_id, JobStatus.generating_previews)
                 analyzer.generate_previews(job_id)
+                state.update_job_status(job_id, JobStatus.summarizing)
+                # Build summary to ensure status/results have content
+                ReportService(state).build_summary(job_id)
+                state.update_job_status(job_id, JobStatus.completed)
+                sublog.info("analyze:worker_done job_id=%s", job_id)
+            except ValueError as ve:
+                # Map known bad-state errors to failed
+                sublog.exception("analyze:worker_value_error job_id=%s err=%s", job_id, ve)
+                try:
+                    state.update_job_status(job_id, JobStatus.failed)
+                except Exception:
+                    pass
+            except FileNotFoundError as fe:
+                sublog.exception("analyze:worker_file_not_found job_id=%s err=%s", job_id, fe)
+                try:
+                    state.update_job_status(job_id, JobStatus.failed)
+                except Exception:
+                    pass
             except Exception as e:
-                # Ensure background errors are visible in logs
-                log.exception("Background analyze error for job %s: %s", job_id, e)
+                sublog.exception("analyze:worker_unexpected job_id=%s err=%s", job_id, e)
+                try:
+                    state.update_job_status(job_id, JobStatus.failed)
+                except Exception:
+                    pass
 
         background.add_task(run)
         state.update_job_status(job_id, JobStatus.queued)
         resp = {"message": "Analysis queued", "job_id": job_id}
-        log.info("Analyze response: %s", resp)
+        log.info("analyze:queued job_id=%s phase=%s resp=%s", job_id, phase, resp)
         return resp
+
     except HTTPException as he:
-        # log and return structured error
-        log.exception("Analyze HTTPException: %s", he)
-        return JSONResponse(status_code=he.status_code, content={"error": True, "message": str(he.detail), "status": he.status_code})
+        # If detail was built via error_response, pass it through; otherwise wrap
+        log.exception("analyze:http_exception job_id=%s phase=%s", job_id, phase)
+        content = he.detail if isinstance(he.detail, dict) else error_response(
+            "http_exception", str(he.detail), {"job_id": job_id}, status_code=he.status_code
+        )
+        return JSONResponse(status_code=he.status_code, content=content)
+    except ValueError as ve:
+        log.exception("analyze:value_error job_id=%s phase=%s", job_id, phase)
+        return JSONResponse(
+            status_code=400,
+            content=error_response("invalid_request", str(ve), {"job_id": job_id}, status_code=400),
+        )
+    except FileNotFoundError as fe:
+        log.exception("analyze:file_not_found job_id=%s phase=%s", job_id, phase)
+        return JSONResponse(
+            status_code=404,
+            content=error_response("file_not_found", "Required file not found", {"job_id": job_id, "error": str(fe)}, status_code=404),
+        )
     except Exception as e:
         # Catch unexpected server errors to avoid opaque 500 without JSON
-        log.exception("Analyze unexpected error: %s", e)
-        return JSONResponse(status_code=500, content={"error": True, "message": "Internal Server Error", "status": 500})
-
-
-
+        log.exception("analyze:unexpected job_id=%s phase=%s err=%s", job_id, phase, e)
+        return JSONResponse(
+            status_code=500,
+            content=error_response("internal_error", "Internal Server Error", {"job_id": job_id}, status_code=500),
+        )
 
 
 # PUBLIC_INTERFACE

@@ -133,9 +133,11 @@ async def compat_upload_new_brand(
 def compat_analyze_job(job_id: str, request: Request, state: StateStore = Depends(get_state_store)):
     try:
         # Forward request context so v1 can log origin/headers; BackgroundTasks is injected by FastAPI.
-        return v1_analyze_job(job_id, request=request)  # type: ignore[arg-type]
+        return v1_analyze_job(job_id, request=request, state=state)  # type: ignore[arg-type]
     except HTTPException as e:
-        raise HTTPException(status_code=e.status_code, detail=_error_payload(e.status_code, str(e.detail)))
+        # If v1 provided dict detail (structured), pass through; else wrap
+        detail = e.detail if isinstance(e.detail, dict) else _error_payload(e.status_code, str(e.detail))
+        raise HTTPException(status_code=e.status_code, detail=detail)
 
 
 

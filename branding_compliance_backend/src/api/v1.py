@@ -6,10 +6,11 @@ import zipfile
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, Request
 from fastapi.responses import FileResponse
 import mimetypes
 import logging
+import os
 from pydantic import BaseModel, Field, StrictStr
 
 from src.models.job import Job, JobStatus
@@ -28,6 +29,41 @@ router = APIRouter(
     prefix="/api/v1",
     tags=["jobs", "assets", "report"],
 )
+
+def _build_public_url_for_output(request: Request, output_path: Path) -> str | None:
+    """
+    Given an absolute Path to a file under the workspace jobs/<job_id>/outputs,
+    construct a browser-accessible URL served by the /outputs static mount.
+
+    It will attempt to:
+      1) Use BASE_URL env var if provided (e.g., https://host:3001)
+      2) Otherwise, derive from request.base_url
+
+    Returns None if the path is not under the expected outputs directory layout.
+    """
+    try:
+        # Expect structure: .../jobs/<job_id>/outputs/<file>
+        parts = output_path.parts
+        if "jobs" not in parts:
+            return None
+        idx = parts.index("jobs")
+        # require at least jobs/<job_id>/outputs/<file>
+        if len(parts) < idx + 4:
+            return None
+        job_id = parts[idx + 1]
+        if parts[idx + 2] != "outputs":
+            return None
+        rel_in_job = Path(*parts[idx + 2:])  # outputs/<file...>
+        # Our StaticFiles mount serves jobs root at /outputs, so URL becomes:
+        # /outputs/{job_id}/{rel_in_job}
+        path_suffix = f"/outputs/{job_id}/{rel_in_job.as_posix()}"
+        base = os.getenv("BASE_URL")
+        if base:
+            return f"{base.rstrip('/')}{path_suffix}"
+        # fallback to request base_url
+        return f"{str(request.base_url).rstrip('/')}{path_suffix}"
+    except Exception:
+        return None
 
 
 # Request/Response Models
@@ -367,14 +403,15 @@ def get_asset_preview(
     description="Run an automatic fix for a specific asset.",
     tags=["assets"],
 )
-def fix_single_asset(job_id: str, asset_id: str, req: FixAssetRequest, state: StateStore = Depends(get_state_store)):
+def fix_single_asset(job_id: str, asset_id: str, req: FixAssetRequest, request: Request, state: StateStore = Depends(get_state_store)):
     """Apply a stubbed automatic fix for an asset and mark related issues as fixed."""
     fixer = FixerService(state)
     try:
         output = fixer.fix_asset(job_id, asset_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"message": "Fixed", "output": str(output)}
+    public_url = _build_public_url_for_output(request, Path(output))
+    return {"message": "Fixed", "output": str(output), "public_url": public_url}
 
 
 # PUBLIC_INTERFACE
@@ -384,11 +421,13 @@ def fix_single_asset(job_id: str, asset_id: str, req: FixAssetRequest, state: St
     description="Run automatic fixes across all assets with issues.",
     tags=["assets"],
 )
-def batch_fix(job_id: str, req: BatchFixRequest, state: StateStore = Depends(get_state_store)):
+def batch_fix(job_id: str, req: BatchFixRequest, request: Request, state: StateStore = Depends(get_state_store)):
     """Apply fixes across all assets that have issues."""
     fixer = FixerService(state)
     outputs = fixer.fix_all(job_id)
-    return {"message": "Batch fixed", "outputs": [str(p) for p in outputs]}
+    outputs_list = [str(p) for p in outputs]
+    public_urls = [_build_public_url_for_output(request, Path(p)) for p in outputs]
+    return {"message": "Batch fixed", "outputs": outputs_list, "public_urls": public_urls}
 
 
 # PUBLIC_INTERFACE

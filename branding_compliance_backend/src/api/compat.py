@@ -196,7 +196,8 @@ def compat_get_asset_preview(
 )
 def compat_fix_single_asset(job_id: str, asset_id: str, req: FixAssetRequest, state: StateStore = Depends(get_state_store)):
     try:
-        return v1_fix_single_asset(job_id, asset_id, req, state)
+        # v1 function will now include public_url in response; passthrough
+        return v1_fix_single_asset(job_id, asset_id, req, state)  # type: ignore[arg-type]
     except HTTPException as e:
         raise HTTPException(status_code=e.status_code, detail=_error_payload(e.status_code, str(e.detail)))
 
@@ -210,7 +211,8 @@ def compat_fix_single_asset(job_id: str, asset_id: str, req: FixAssetRequest, st
 )
 def compat_batch_fix(job_id: str, req: BatchFixRequest, state: StateStore = Depends(get_state_store)):
     try:
-        return v1_batch_fix(job_id, req, state)
+        # v1 now returns public_urls; passthrough unchanged
+        return v1_batch_fix(job_id, req, state)  # type: ignore[arg-type]
     except HTTPException as e:
         raise HTTPException(status_code=e.status_code, detail=_error_payload(e.status_code, str(e.detail)))
 

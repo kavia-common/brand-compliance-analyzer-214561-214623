@@ -1,11 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import os
 import logging
+from pathlib import Path
 
 from src.api.v1 import router as v1_router
 from src.api.compat import router as compat_router
 from src.services.state_store import StateStore
+from src.storage.workspace import get_root_workspace
 
 # Basic logging setup
 logging.basicConfig(level=logging.INFO)
@@ -49,6 +52,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount a static files route to expose job outputs via HTTP
+# This maps to: {workspace_root}/jobs which contains <job_id>/outputs/...
+# Public URL shape: /outputs/{job_id}/outputs/<file_name>
+try:
+    ws_root: Path = get_root_workspace()
+    jobs_root = ws_root / "jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/outputs",
+        StaticFiles(directory=str(jobs_root), html=False),
+        name="outputs",
+    )
+except Exception as e:
+    logging.getLogger("api.static").exception("Failed to mount static outputs: %s", e)
+
 # PUBLIC_INTERFACE
 @app.get("/", tags=["health"], summary="Health Check")
 def health_check():
@@ -76,6 +94,7 @@ def api_notes():
         "notes": "Analysis runs asynchronously via BackgroundTasks. Poll /api/v1/jobs/{job_id}/status and /results.",
         "previews": "Use /api/v1/jobs/{job_id}/assets/{asset_id}/preview?view=original|overlay|fixed",
         "downloads": "Use /api/v1/jobs/{job_id}/download?type=zip|report|both; server sets Content-Disposition and proper Content-Type.",
+        "public_files": "Outputs are served under /outputs/{job_id}/outputs/<file_name> for direct browser access.",
         "cors": {
             "allow_origins": default_origins,
             "note": "Configure PREVIEW_FRONTEND_ORIGIN and CORS_EXTRA_ORIGINS env vars to add more origins.",

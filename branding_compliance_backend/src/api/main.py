@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+import io
+import json
+import os
+from typing import Optional
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
+
+from src.models.schemas import (
+    StartRequestParams,
+    StatusResponse,
+)
+from src.services.json_utils import to_native_jsonable
+from src.tasks.pdf_pipeline import PdfLogoReplaceManager
+from src.storage.paths import ensure_storage_root, load_metadata_safely
+
+# FastAPI app with metadata and OpenAPI tags
+app = FastAPI(
+    title="Brand Compliance Backend",
+    description="APIs to analyze and replace old logos in PDFs. Upload a PDF with old logo templates and a new logo to produce a corrected PDF, along with previews and status.",
+    version="0.1.0",
+    openapi_tags=[
+        {
+            "name": "PDF Logo Replace",
+            "description": "Upload PDFs for logo replacement, check status, view previews, and download results.",
+        },
+        {
+            "name": "Debug",
+            "description": "Temporary debugging endpoints for diagnostics and verification runs."
+        }
+    ],
+)
+
+# Allow CORS (broadly for MVP)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, narrow this to specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize storage root on startup
+ensure_storage_root()
+
+
+# PUBLIC_INTERFACE
+@app.get("/", tags=["Health"])
+def health_check():
+    """Health check endpoint."""
+    return {"message": "Healthy"}
+
+
+# PUBLIC_INTERFACE
+@app.post(
+    "/pdf/logo-replace/start",
+    tags=["PDF Logo Replace"],
+    summary="Start PDF logo replacement job",
+    description="Upload a PDF, one or more old logo images, and a new logo image. Returns a job_id used to query status, previews, and download.",
+    response_model=dict,
+)
+async def start_logo_replace_job(
+    pdf: UploadFile = File(..., description="The input PDF file"),
+    old_logos: list[UploadFile] = File(..., description="One or more images of the old logo to detect"),
+    new_logo: UploadFile = File(..., description="The new logo image to overlay in place of detected old logos"),
+    dpi: int = Form(250, description="Rasterization DPI for detection (200-300 recommended)"),
+    max_pages: Optional[int] = Form(None, description="Optional cap on number of pages to process"),
+    match_threshold: float = Form(0.8, description="Template matching threshold (0.0-1.0)"),
+):
+    # Basic validations
+    if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Invalid or missing PDF file.")
+    if not old_logos or any((not f.filename for f in old_logos)):
+        raise HTTPException(status_code=400, detail="At least one old_logo image is required.")
+    if not new_logo or not new_logo.filename:
+        raise HTTPException(status_code=400, detail="New logo image is required.")
+    if dpi < 100 or dpi > 600:
+        raise HTTPException(status_code=400, detail="dpi must be between 100 and 600.")
+    if match_threshold <= 0 or match_threshold > 1:
+        raise HTTPException(status_code=400, detail="match_threshold must be in (0, 1].")
+
+    # Build params model (multipart handled manually, but keep strong typing)
+    try:
+        params = StartRequestParams(
+            dpi=dpi,
+            max_pages=max_pages,
+            match_threshold=match_threshold,
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=json.loads(e.json()))
+
+    # Delegate to manager to create job and spawn processing
+    job_id = PdfLogoReplaceManager.create_job_and_start(
+        pdf_file=pdf,
+        old_logo_files=old_logos,
+        new_logo_file=new_logo,
+        params=params,
+    )
+    return to_native_jsonable({"job_id": job_id})
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/pdf/logo-replace/status/{job_id}",
+    tags=["PDF Logo Replace"],
+    summary="Get job status",
+    description="Returns status, progress, and findings summary for the specified job.",
+    response_model=StatusResponse,
+)
+def get_status(job_id: str):
+    status = PdfLogoReplaceManager.get_status(job_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    # Convert pydantic model to dict then normalize to ensure JSON-safe output
+    status_dict = status.model_dump() if hasattr(status, "model_dump") else dict(status)
+    return to_native_jsonable(status_dict)
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/pdf/logo-replace/preview/{job_id}/{page_index}",
+    tags=["PDF Logo Replace"],
+    summary="Get preview image for a page",
+    description="Returns a PNG preview for the given page. type=detected shows detection boxes; type=replaced shows the page with overlays.",
+)
+def get_preview(job_id: str, page_index: int, type: str = "detected"):
+    # Validate preview type
+    if type not in ("detected", "replaced"):
+        raise HTTPException(status_code=400, detail="type must be 'detected' or 'replaced'.")
+
+    preview_bytes = PdfLogoReplaceManager.get_preview(job_id, page_index, type)
+    if preview_bytes is None:
+        raise HTTPException(status_code=404, detail="Preview not found.")
+    return StreamingResponse(io.BytesIO(preview_bytes), media_type="image/png")
+
+
+# PUBLIC_INTERFACE
+@app.post(
+    "/pdf/logo-replace/confirm/{job_id}",
+    tags=["PDF Logo Replace"],
+    summary="Confirm results (stub)",
+    description="Optional confirmation step. For MVP this is a stub that marks job as confirmed if possible.",
+)
+def confirm_job(job_id: str):
+    ok = PdfLogoReplaceManager.confirm(job_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return to_native_jsonable({"status": "confirmed"})
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/pdf/logo-replace/download/{job_id}",
+    tags=["PDF Logo Replace"],
+    summary="Download replaced PDF",
+    description="Downloads the corrected/replaced PDF for the given job_id.",
+)
+def download_replaced_pdf(job_id: str):
+    """Download the single replaced PDF for this job.
+
+    Returns:
+        application/pdf stream with Content-Disposition attachment.
+    """
+    data = PdfLogoReplaceManager.get_download(job_id)
+    if data is None:
+        # Try to give a more descriptive message if available in metadata
+        md = load_metadata_safely(job_id)
+        if md and md.get("status") != "completed":
+            raise HTTPException(status_code=409, detail="Job is not yet completed.")
+        raise HTTPException(status_code=404, detail="Replaced PDF not found.")
+    filename, payload = data
+    return Response(
+        content=payload,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/pdf/logo-replace/download-zip/{job_id}",
+    tags=["PDF Logo Replace"],
+    summary="Download all replaced PDFs as ZIP",
+    description="Bundles all generated replaced PDFs for the job into a ZIP archive and streams it.",
+)
+def download_replaced_zip(job_id: str):
+    """Stream a ZIP file containing one or more replaced PDFs.
+
+    Parameters:
+        job_id: The job identifier.
+
+    Returns:
+        application/zip StreamingResponse with Content-Disposition attachment.
+
+    Raises:
+        404 if no outputs are found for the job.
+        409 if the job is not completed yet.
+    """
+    from src.services.zip_utils import create_zip_from_files  # local import to avoid cycles
+
+    # Gather output PDFs
+    paths = PdfLogoReplaceManager.get_all_output_pdfs(job_id)
+    if not paths:
+        md = load_metadata_safely(job_id)
+        if md and md.get("status") != "completed":
+            raise HTTPException(status_code=409, detail="Job is not yet completed.")
+        raise HTTPException(status_code=404, detail="No outputs available for this job.")
+
+    # Build iterable of (arcname, file_path)
+    pairs = []
+    for p in paths:
+        arc = os.path.basename(p)
+        pairs.append((arc, p))
+
+    # Create zip bytes in memory; for large files consider chunked streaming
+    try:
+        zip_bytes = create_zip_from_files(pairs)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="One or more output files missing.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build zip: {str(e)}")
+
+    filename = f"job_{job_id}_outputs.zip"
+    return StreamingResponse(
+        io.BytesIO(zip_bytes),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/debug/job/{job_id}",
+    tags=["Debug"],
+    summary="Get job debug metadata and artifact listing",
+    description="Temporary diagnostics: returns metadata.json, lists work/pages and work/overlays images, and template load statuses.",
+)
+def debug_job(job_id: str):
+    """Return job metadata and lists of diagnostic artifacts (raw/detected/replaced images)."""
+    md = load_metadata_safely(job_id)
+    if not md:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    base = os.path.join(os.getcwd(), "storage", "jobs", job_id)
+    pages_dir = os.path.join(base, "work", "pages")
+    overlays_dir = os.path.join(base, "work", "overlays")
+
+    def list_files(d: str):
+        try:
+            return sorted([f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))])
+        except Exception:
+            return []
+
+    resp = {
+        "metadata": md,
+        "artifacts": {
+            "pages": list_files(pages_dir),
+            "overlays": list_files(overlays_dir),
+        },
+    }
+    return resp
+
+
+# PUBLIC_INTERFACE
+@app.post(
+    "/debug/verify-last-job",
+    tags=["Debug"],
+    summary="Run a verification re-process of most recent job inputs",
+    description="Re-runs detection on the last job with DPI max(250, existing) and slightly relaxed threshold if the last run had zero detections. Returns a new verification job_id.",
+)
+def verify_last_job():
+    """Create a verification job using the most recent job's inputs and improved detection settings."""
+    jobs_root = os.path.join(os.getcwd(), "storage", "jobs")
+    if not os.path.exists(jobs_root):
+        raise HTTPException(status_code=404, detail="No jobs root found.")
+
+    # Pick latest job by modification time
+    all_jobs = [d for d in os.listdir(jobs_root) if os.path.isdir(os.path.join(jobs_root, d))]
+    if not all_jobs:
+        raise HTTPException(status_code=404, detail="No jobs available.")
+    latest = max(all_jobs, key=lambda d: os.path.getmtime(os.path.join(jobs_root, d)))
+    md = load_metadata_safely(latest)
+    if not md:
+        raise HTTPException(status_code=404, detail="Latest job metadata missing.")
+
+    pdf_path = md.get("input_pdf")
+    old_logo_paths = md.get("old_logos") or []
+    new_logo_path = md.get("new_logo")
+    params = md.get("params") or {}
+    dpi = int(max(250, params.get("dpi", 250)))
+    match_threshold = float(max(0.7, min(0.9, params.get("match_threshold", 0.8))))
+    # If previous detections were zero, relax a bit more
+    findings = md.get("findings") or {}
+    if findings and findings.get("total_detections", 0) == 0:
+        match_threshold = max(0.62, match_threshold - 0.1)
+
+    # Create UploadFile-like wrappers backed by files on disk
+    class _FakeUpload:
+        def __init__(self, path):
+            self.filename = os.path.basename(path)
+            self.file = open(path, "rb")
+
+    try:
+        pdf_up = _FakeUpload(pdf_path)
+        old_ups = [_FakeUpload(p) for p in old_logo_paths]
+        new_up = _FakeUpload(new_logo_path)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to open previous job inputs for verification run.")
+
+    srp = StartRequestParams(dpi=dpi, max_pages=params.get("max_pages"), match_threshold=match_threshold)
+    job_id = PdfLogoReplaceManager.create_job_and_start(pdf_up, old_ups, new_up, srp)
+    return to_native_jsonable({"verification_job_id": job_id, "source_job_id": latest, "params_used": srp.model_dump()})

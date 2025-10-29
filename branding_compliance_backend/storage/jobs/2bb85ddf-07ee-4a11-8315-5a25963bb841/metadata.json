@@ -1,0 +1,96 @@
+{
+  "job_id": "2bb85ddf-07ee-4a11-8315-5a25963bb841",
+  "status": "completed",
+  "progress": 1.0,
+  "message": "Completed",
+  "input_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/2bb85ddf-07ee-4a11-8315-5a25963bb841/input/pdfs/Vlinder - Global Capability and Traceabilty Credentials.pptx (1).pdf",
+  "output_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/2bb85ddf-07ee-4a11-8315-5a25963bb841/output/replaced/Vlinder - Global Capability and Traceabilty Credentials.pptx (1)_replaced.pdf",
+  "outputs": [
+    {
+      "type": "pdf",
+      "path": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/2bb85ddf-07ee-4a11-8315-5a25963bb841/output/replaced/Vlinder - Global Capability and Traceabilty Credentials.pptx (1)_replaced.pdf",
+      "label": "replaced"
+    }
+  ],
+  "params": {
+    "dpi": 250,
+    "max_pages": null,
+    "match_threshold": 0.8
+  },
+  "findings": {
+    "total_pages": 17,
+    "pages": [
+      {
+        "page_index": 0,
+        "detections": []
+      },
+      {
+        "page_index": 1,
+        "detections": []
+      },
+      {
+        "page_index": 2,
+        "detections": []
+      },
+      {
+        "page_index": 3,
+        "detections": []
+      },
+      {
+        "page_index": 4,
+        "detections": []
+      },
+      {
+        "page_index": 5,
+        "detections": []
+      },
+      {
+        "page_index": 6,
+        "detections": []
+      },
+      {
+        "page_index": 7,
+        "detections": []
+      },
+      {
+        "page_index": 8,
+        "detections": []
+      },
+      {
+        "page_index": 9,
+        "detections": []
+      },
+      {
+        "page_index": 10,
+        "detections": []
+      },
+      {
+        "page_index": 11,
+        "detections": []
+      },
+      {
+        "page_index": 12,
+        "detections": []
+      },
+      {
+        "page_index": 13,
+        "detections": []
+      },
+      {
+        "page_index": 14,
+        "detections": []
+      },
+      {
+        "page_index": 15,
+        "detections": []
+      },
+      {
+        "page_index": 16,
+        "detections": []
+      }
+    ]
+  },
+  "timestamps": {
+    "completed": 1761731024.3674252
+  }
+}

@@ -1,0 +1,451 @@
+{
+  "job_id": "1e671222-2388-4f4c-9bb4-b4beeb61428f",
+  "status": "completed",
+  "progress": 1.0,
+  "message": "Completed",
+  "input_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/1e671222-2388-4f4c-9bb4-b4beeb61428f/input/pdfs/CCCCC EOI21-25 Digital Marketplace V3.docx.pdf",
+  "output_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/1e671222-2388-4f4c-9bb4-b4beeb61428f/output/replaced/CCCCC EOI21-25 Digital Marketplace V3.docx_replaced.pdf",
+  "outputs": [
+    {
+      "type": "pdf",
+      "path": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/1e671222-2388-4f4c-9bb4-b4beeb61428f/output/replaced/CCCCC EOI21-25 Digital Marketplace V3.docx_replaced.pdf",
+      "label": "replaced"
+    }
+  ],
+  "params": {
+    "dpi": 250,
+    "max_pages": null,
+    "match_threshold": 0.95
+  },
+  "findings": {
+    "total_pages": 84,
+    "pages": [
+      {
+        "page_index": 0,
+        "detections": []
+      },
+      {
+        "page_index": 1,
+        "detections": []
+      },
+      {
+        "page_index": 2,
+        "detections": []
+      },
+      {
+        "page_index": 3,
+        "detections": []
+      },
+      {
+        "page_index": 4,
+        "detections": []
+      },
+      {
+        "page_index": 5,
+        "detections": []
+      },
+      {
+        "page_index": 6,
+        "detections": []
+      },
+      {
+        "page_index": 7,
+        "detections": []
+      },
+      {
+        "page_index": 8,
+        "detections": []
+      },
+      {
+        "page_index": 9,
+        "detections": []
+      },
+      {
+        "page_index": 10,
+        "detections": []
+      },
+      {
+        "page_index": 11,
+        "detections": []
+      },
+      {
+        "page_index": 12,
+        "detections": []
+      },
+      {
+        "page_index": 13,
+        "detections": []
+      },
+      {
+        "page_index": 14,
+        "detections": []
+      },
+      {
+        "page_index": 15,
+        "detections": []
+      },
+      {
+        "page_index": 16,
+        "detections": []
+      },
+      {
+        "page_index": 17,
+        "detections": []
+      },
+      {
+        "page_index": 18,
+        "detections": []
+      },
+      {
+        "page_index": 19,
+        "detections": []
+      },
+      {
+        "page_index": 20,
+        "detections": []
+      },
+      {
+        "page_index": 21,
+        "detections": []
+      },
+      {
+        "page_index": 22,
+        "detections": []
+      },
+      {
+        "page_index": 23,
+        "detections": []
+      },
+      {
+        "page_index": 24,
+        "detections": []
+      },
+      {
+        "page_index": 25,
+        "detections": []
+      },
+      {
+        "page_index": 26,
+        "detections": []
+      },
+      {
+        "page_index": 27,
+        "detections": []
+      },
+      {
+        "page_index": 28,
+        "detections": []
+      },
+      {
+        "page_index": 29,
+        "detections": []
+      },
+      {
+        "page_index": 30,
+        "detections": []
+      },
+      {
+        "page_index": 31,
+        "detections": []
+      },
+      {
+        "page_index": 32,
+        "detections": []
+      },
+      {
+        "page_index": 33,
+        "detections": []
+      },
+      {
+        "page_index": 34,
+        "detections": []
+      },
+      {
+        "page_index": 35,
+        "detections": []
+      },
+      {
+        "page_index": 36,
+        "detections": []
+      },
+      {
+        "page_index": 37,
+        "detections": []
+      },
+      {
+        "page_index": 38,
+        "detections": []
+      },
+      {
+        "page_index": 39,
+        "detections": []
+      },
+      {
+        "page_index": 40,
+        "detections": []
+      },
+      {
+        "page_index": 41,
+        "detections": []
+      },
+      {
+        "page_index": 42,
+        "detections": []
+      },
+      {
+        "page_index": 43,
+        "detections": []
+      },
+      {
+        "page_index": 44,
+        "detections": []
+      },
+      {
+        "page_index": 45,
+        "detections": []
+      },
+      {
+        "page_index": 46,
+        "detections": []
+      },
+      {
+        "page_index": 47,
+        "detections": []
+      },
+      {
+        "page_index": 48,
+        "detections": []
+      },
+      {
+        "page_index": 49,
+        "detections": []
+      },
+      {
+        "page_index": 50,
+        "detections": []
+      },
+      {
+        "page_index": 51,
+        "detections": []
+      },
+      {
+        "page_index": 52,
+        "detections": []
+      },
+      {
+        "page_index": 53,
+        "detections": []
+      },
+      {
+        "page_index": 54,
+        "detections": []
+      },
+      {
+        "page_index": 55,
+        "detections": []
+      },
+      {
+        "page_index": 56,
+        "detections": []
+      },
+      {
+        "page_index": 57,
+        "detections": []
+      },
+      {
+        "page_index": 58,
+        "detections": []
+      },
+      {
+        "page_index": 59,
+        "detections": []
+      },
+      {
+        "page_index": 60,
+        "detections": []
+      },
+      {
+        "page_index": 61,
+        "detections": []
+      },
+      {
+        "page_index": 62,
+        "detections": []
+      },
+      {
+        "page_index": 63,
+        "detections": []
+      },
+      {
+        "page_index": 64,
+        "detections": []
+      },
+      {
+        "page_index": 65,
+        "detections": []
+      },
+      {
+        "page_index": 66,
+        "detections": []
+      },
+      {
+        "page_index": 67,
+        "detections": []
+      },
+      {
+        "page_index": 68,
+        "detections": []
+      },
+      {
+        "page_index": 69,
+        "detections": []
+      },
+      {
+        "page_index": 70,
+        "detections": []
+      },
+      {
+        "page_index": 71,
+        "detections": []
+      },
+      {
+        "page_index": 72,
+        "detections": []
+      },
+      {
+        "page_index": 73,
+        "detections": []
+      },
+      {
+        "page_index": 74,
+        "detections": []
+      },
+      {
+        "page_index": 75,
+        "detections": []
+      },
+      {
+        "page_index": 76,
+        "detections": []
+      },
+      {
+        "page_index": 77,
+        "detections": []
+      },
+      {
+        "page_index": 78,
+        "detections": []
+      },
+      {
+        "page_index": 79,
+        "detections": []
+      },
+      {
+        "page_index": 80,
+        "detections": []
+      },
+      {
+        "page_index": 81,
+        "detections": []
+      },
+      {
+        "page_index": 82,
+        "detections": []
+      },
+      {
+        "page_index": 83,
+        "detections": []
+      }
+    ],
+    "per_page_detection_counts": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "total_detections": 0
+  },
+  "timestamps": {
+    "completed": 1761734223.171904
+  }
+}

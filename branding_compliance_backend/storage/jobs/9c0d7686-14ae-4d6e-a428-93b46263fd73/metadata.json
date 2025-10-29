@@ -1,0 +1,121 @@
+{
+  "job_id": "9c0d7686-14ae-4d6e-a428-93b46263fd73",
+  "status": "completed",
+  "progress": 1.0,
+  "message": "Completed",
+  "input_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/9c0d7686-14ae-4d6e-a428-93b46263fd73/input/pdfs/Screenshot_2025-01-28-12-48-54-152_io.vlinder.klefkiwallet.pdf",
+  "output_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/9c0d7686-14ae-4d6e-a428-93b46263fd73/output/replaced/Screenshot_2025-01-28-12-48-54-152_io.vlinder.klefkiwallet_replaced.pdf",
+  "outputs": [
+    {
+      "type": "pdf",
+      "path": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/9c0d7686-14ae-4d6e-a428-93b46263fd73/output/replaced/Screenshot_2025-01-28-12-48-54-152_io.vlinder.klefkiwallet_replaced.pdf",
+      "label": "replaced"
+    }
+  ],
+  "params": {
+    "dpi": 250,
+    "max_pages": null,
+    "match_threshold": 0.8
+  },
+  "findings": {
+    "total_pages": 7,
+    "pages": [
+      {
+        "page_index": 0,
+        "detections": []
+      },
+      {
+        "page_index": 1,
+        "detections": []
+      },
+      {
+        "page_index": 2,
+        "detections": [
+          {
+            "x": 420,
+            "y": 174,
+            "w": 180,
+            "h": 187,
+            "score": 0.9691796898841858,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 3,
+        "detections": []
+      },
+      {
+        "page_index": 4,
+        "detections": [
+          {
+            "x": 420,
+            "y": 174,
+            "w": 180,
+            "h": 187,
+            "score": 0.9692014455795288,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 5,
+        "detections": []
+      },
+      {
+        "page_index": 6,
+        "detections": []
+      }
+    ],
+    "per_page_detection_counts": [
+      0,
+      0,
+      1,
+      0,
+      1,
+      0,
+      0
+    ],
+    "total_detections": 2,
+    "detections_dump": {
+      "0": [],
+      "1": [],
+      "2": [
+        {
+          "x": 420,
+          "y": 174,
+          "w": 180,
+          "h": 187,
+          "score": 0.9691796898841858,
+          "template_id": 0
+        }
+      ],
+      "3": [],
+      "4": [
+        {
+          "x": 420,
+          "y": 174,
+          "w": 180,
+          "h": 187,
+          "score": 0.9692014455795288,
+          "template_id": 0
+        }
+      ],
+      "5": [],
+      "6": []
+    }
+  },
+  "debug": {
+    "templates": [
+      {
+        "path": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/9c0d7686-14ae-4d6e-a428-93b46263fd73/input/logos/old/old_0.png",
+        "status": "loaded"
+      }
+    ],
+    "notes": "Raw page PNGs stored as page_XXXX_raw.png; normalized templates stored as template_XX.png in work/pages."
+  },
+  "timestamps": {
+    "completed": 1761735603.8256912
+  },
+  "confirmed": true
+}

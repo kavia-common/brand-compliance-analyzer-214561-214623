@@ -26,6 +26,10 @@ app = FastAPI(
         {
             "name": "PDF Logo Replace",
             "description": "Upload PDFs for logo replacement, check status, view previews, and download results.",
+        },
+        {
+            "name": "Debug",
+            "description": "Temporary debugging endpoints for diagnostics and verification runs."
         }
     ],
 )
@@ -227,3 +231,87 @@ def download_replaced_zip(job_id: str):
             "Content-Disposition": f'attachment; filename="{filename}"'
         },
     )
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/debug/job/{job_id}",
+    tags=["Debug"],
+    summary="Get job debug metadata and artifact listing",
+    description="Temporary diagnostics: returns metadata.json, lists work/pages and work/overlays images, and template load statuses.",
+)
+def debug_job(job_id: str):
+    """Return job metadata and lists of diagnostic artifacts (raw/detected/replaced images)."""
+    md = load_metadata_safely(job_id)
+    if not md:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    base = os.path.join(os.getcwd(), "storage", "jobs", job_id)
+    pages_dir = os.path.join(base, "work", "pages")
+    overlays_dir = os.path.join(base, "work", "overlays")
+
+    def list_files(d: str):
+        try:
+            return sorted([f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))])
+        except Exception:
+            return []
+
+    resp = {
+        "metadata": md,
+        "artifacts": {
+            "pages": list_files(pages_dir),
+            "overlays": list_files(overlays_dir),
+        },
+    }
+    return resp
+
+
+# PUBLIC_INTERFACE
+@app.post(
+    "/debug/verify-last-job",
+    tags=["Debug"],
+    summary="Run a verification re-process of most recent job inputs",
+    description="Re-runs detection on the last job with DPI max(250, existing) and slightly relaxed threshold if the last run had zero detections. Returns a new verification job_id.",
+)
+def verify_last_job():
+    """Create a verification job using the most recent job's inputs and improved detection settings."""
+    jobs_root = os.path.join(os.getcwd(), "storage", "jobs")
+    if not os.path.exists(jobs_root):
+        raise HTTPException(status_code=404, detail="No jobs root found.")
+
+    # Pick latest job by modification time
+    all_jobs = [d for d in os.listdir(jobs_root) if os.path.isdir(os.path.join(jobs_root, d))]
+    if not all_jobs:
+        raise HTTPException(status_code=404, detail="No jobs available.")
+    latest = max(all_jobs, key=lambda d: os.path.getmtime(os.path.join(jobs_root, d)))
+    md = load_metadata_safely(latest)
+    if not md:
+        raise HTTPException(status_code=404, detail="Latest job metadata missing.")
+
+    pdf_path = md.get("input_pdf")
+    old_logo_paths = md.get("old_logos") or []
+    new_logo_path = md.get("new_logo")
+    params = md.get("params") or {}
+    dpi = int(max(250, params.get("dpi", 250)))
+    match_threshold = float(max(0.7, min(0.9, params.get("match_threshold", 0.8))))
+    # If previous detections were zero, relax a bit more
+    findings = md.get("findings") or {}
+    if findings and findings.get("total_detections", 0) == 0:
+        match_threshold = max(0.62, match_threshold - 0.1)
+
+    # Create UploadFile-like wrappers backed by files on disk
+    class _FakeUpload:
+        def __init__(self, path):
+            self.filename = os.path.basename(path)
+            self.file = open(path, "rb")
+
+    try:
+        pdf_up = _FakeUpload(pdf_path)
+        old_ups = [_FakeUpload(p) for p in old_logo_paths]
+        new_up = _FakeUpload(new_logo_path)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to open previous job inputs for verification run.")
+
+    srp = StartRequestParams(dpi=dpi, max_pages=params.get("max_pages"), match_threshold=match_threshold)
+    job_id = PdfLogoReplaceManager.create_job_and_start(pdf_up, old_ups, new_up, srp)
+    return {"verification_job_id": job_id, "source_job_id": latest, "params_used": srp.model_dump()}

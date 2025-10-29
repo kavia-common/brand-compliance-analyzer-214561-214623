@@ -13,7 +13,14 @@ import numpy as np
 from PIL import Image
 
 from src.models.schemas import BoundingBox, Findings, PageFindings, StartRequestParams, StatusResponse
-from src.services.image_utils import pil_to_cv, cv_to_png_bytes, multi_scale_template_match, draw_boxes, Detection
+from src.services.image_utils import (
+    pil_to_cv,
+    cv_to_png_bytes,
+    multi_scale_template_match,
+    draw_boxes,
+    Detection,
+    feature_match_fallback,
+)
 from src.storage.paths import (
     ensure_job_dirs,
     input_pdfs_dir,
@@ -43,7 +50,6 @@ def _update_status(job_id: str, **kwargs) -> None:
 
 def _save_uploaded_file(upload, dest_path: str) -> None:
     with open(dest_path, "wb") as f:
-        # UploadFile exposes .file for SpooledTemporaryFile
         while True:
             chunk = upload.file.read(1024 * 1024)
             if not chunk:
@@ -59,7 +65,12 @@ def _encode_pil_to_png_bytes(img: Image.Image) -> bytes:
 
 
 def _rasterize_pdf_to_images(pdf_path: str, dpi: int, max_pages: Optional[int]) -> List[Image.Image]:
-    """Rasterize PDF pages into PIL images at the given DPI."""
+    """
+    Rasterize PDF pages into PIL images at the given DPI.
+    Ensures consistent RGB colorspace, sufficient DPI (enforced minimum 200),
+    and enables antialiasing for vector content.
+    """
+    dpi = max(200, min(600, int(dpi or 250)))
     images: List[Image.Image] = []
     with fitz.open(pdf_path) as doc:
         page_count = len(doc)
@@ -67,8 +78,9 @@ def _rasterize_pdf_to_images(pdf_path: str, dpi: int, max_pages: Optional[int]) 
         for i in range(to_process):
             page = doc[i]
             zoom = dpi / 72.0
+            # Use matrix that ensures antialias for vector drawing (default with get_pixmap)
             mat = fitz.Matrix(zoom, zoom)
-            pix = page.get_pixmap(matrix=mat, alpha=False)
+            pix = page.get_pixmap(matrix=mat, alpha=False, colorspace=fitz.csRGB)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             images.append(img)
     return images
@@ -76,7 +88,7 @@ def _rasterize_pdf_to_images(pdf_path: str, dpi: int, max_pages: Optional[int]) 
 
 def _overlay_logo_on_page(page: fitz.Page, new_logo_img: Image.Image, boxes: List[Detection], dpi: int):
     """
-    Overlay new_logo onto page within detected boxes. For MVP:
+    Overlay new_logo onto page within detected boxes:
     - Draw white rectangle
     - Draw image scaled to box size
     """
@@ -87,25 +99,26 @@ def _overlay_logo_on_page(page: fitz.Page, new_logo_img: Image.Image, boxes: Lis
 
     inv_scale = 72.0 / dpi  # convert raster pixels back to PDF points
     for d in boxes:
-        # Bounding box in PDF points
         x0 = d.x * inv_scale
         y0 = d.y * inv_scale
         x1 = (d.x + d.w) * inv_scale
         y1 = (d.y + d.h) * inv_scale
 
         rect = fitz.Rect(x0, y0, x1, y1)
-        # Paint white rectangle as background to avoid bleed-through
         page.draw_rect(rect, color=(1, 1, 1), fill=(1, 1, 1), width=0)
-        # Draw image in the rect
         page.insert_image(rect, stream=logo_bytes, keep_proportion=False, overlay=True)
 
 
 def _save_page_preview_images(job_id: str, page_idx: int, page_img: Image.Image, detections: List[Detection], new_logo: Image.Image):
-    """Generate and save detected and replaced preview PNGs."""
+    """Generate and save detected and replaced preview PNGs and the raw page image for debugging."""
     pages_dir = work_pages_dir(job_id)
     overlays_dir = work_overlays_dir(job_id)
     os.makedirs(pages_dir, exist_ok=True)
     os.makedirs(overlays_dir, exist_ok=True)
+
+    # Save raw page render for diagnostics
+    raw_path = os.path.join(pages_dir, f"page_{page_idx:04d}_raw.png")
+    page_img.save(raw_path, format="PNG")
 
     # Save detected overlay preview
     bgr = pil_to_cv(page_img)
@@ -117,9 +130,7 @@ def _save_page_preview_images(job_id: str, page_idx: int, page_img: Image.Image,
     # Save replaced preview by compositing new_logo onto image (visual only)
     replaced_bgr = bgr.copy()
     logo_bgr = pil_to_cv(new_logo)
-    lh, lw = logo_bgr.shape[:2]
     for d in detections:
-        # Resize logo to box
         if d.w <= 0 or d.h <= 0:
             continue
         resized = cv2.resize(logo_bgr, (d.w, d.h), interpolation=cv2.INTER_AREA)
@@ -129,7 +140,6 @@ def _save_page_preview_images(job_id: str, page_idx: int, page_img: Image.Image,
         y0 = max(0, min(y0, H - 1))
         w = max(1, min(w, W - x0))
         h = max(1, min(h, H - y0))
-        # paint white then paste
         replaced_bgr[y0 : y0 + h, x0 : x0 + w] = 255
         replaced_bgr[y0 : y0 + h, x0 : x0 + w] = resized
 
@@ -170,13 +180,22 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
         if total_pages == 0:
             raise RuntimeError("No pages to process.")
 
-        # Prepare templates
+        # Prepare templates (normalize and save debug copies)
         templates_bgr: List[np.ndarray] = []
-        for p in old_logo_paths:
+        loaded_templates_info: List[Dict[str, str]] = []
+        for idx, p in enumerate(old_logo_paths):
             try:
                 tpl_img = Image.open(p).convert("RGBA")
-                templates_bgr.append(pil_to_cv(tpl_img))
-            except Exception:
+                tpl_bgr = pil_to_cv(tpl_img)
+                templates_bgr.append(tpl_bgr)
+                # write debug copy after normalization
+                dbg_tpl_dir = work_pages_dir(job_id)
+                os.makedirs(dbg_tpl_dir, exist_ok=True)
+                with open(os.path.join(dbg_tpl_dir, f"template_{idx:02d}.png"), "wb") as f:
+                    f.write(cv_to_png_bytes(tpl_bgr))
+                loaded_templates_info.append({"path": p, "status": "loaded"})
+            except Exception as ex:
+                loaded_templates_info.append({"path": p, "status": f"failed: {ex}"})
                 continue
         if not templates_bgr:
             raise RuntimeError("No valid old_logo templates could be loaded.")
@@ -186,26 +205,39 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
 
         # Process each page
         per_page_counts: List[int] = []
+        all_detections_dump: Dict[int, List[Dict[str, float]]] = {}
         for idx, page_img in enumerate(raster_pages):
             _update_status(job_id, message=f"Detecting logos on page {idx + 1}/{total_pages}")
             page_bgr = pil_to_cv(page_img)
 
-            # Run detection with robust preprocessing
+            # Primary: multi-scale template matching
             dets = multi_scale_template_match(
                 page_bgr,
                 templates_bgr,
                 match_threshold=float(params.match_threshold or 0.75),
             )
+
+            # Fallback if zero detections: feature matching with small rotations
+            if len(dets) == 0:
+                fm_dets = feature_match_fallback(page_bgr, templates_bgr)
+                # Use feature matches if any
+                if fm_dets:
+                    dets = fm_dets
+
             detections_by_page[idx] = dets
             per_page_counts.append(len(dets))
 
-            # Save previews
+            # Save previews and raw page
             _save_page_preview_images(job_id, idx, page_img, dets, new_logo_img)
 
-            # Collect findings
-            page_boxes = [
-                BoundingBox(x=d.x, y=d.y, w=d.w, h=d.h, score=d.score, template_id=d.template_id) for d in dets
-            ]
+            # Collect findings and dump per-box metadata
+            page_boxes = []
+            all_detections_dump[idx] = []
+            for d in dets:
+                page_boxes.append(BoundingBox(x=d.x, y=d.y, w=d.w, h=d.h, score=d.score, template_id=d.template_id))
+                all_detections_dump[idx].append(
+                    {"x": d.x, "y": d.y, "w": d.w, "h": d.h, "score": float(d.score), "template_id": d.template_id}
+                )
             findings_pages.append(PageFindings(page_index=idx, detections=page_boxes))
 
             # Update progress
@@ -213,7 +245,7 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
 
         # Write replaced PDF
         _update_status(job_id, message="Writing replaced PDF")
-        out_pdf = _write_output_pdf(job_id, pdf_path, detections_by_page, new_logo_img, dpi=params.dpi)
+        out_pdf = _write_output_pdf(job_id, pdf_path, detections_by_page, new_logo_img, dpi=max(200, params.dpi))
 
         # Save metadata
         meta = {
@@ -222,7 +254,7 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
             "progress": 1.0,
             "message": "Completed",
             "input_pdf": pdf_path,
-            "output_pdf": out_pdf,  # backward compatibility
+            "output_pdf": out_pdf,
             "outputs": [
                 {"type": "pdf", "path": out_pdf, "label": "replaced"}
             ],
@@ -232,6 +264,11 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
                 "pages": [fp.model_dump() for fp in findings_pages],
                 "per_page_detection_counts": per_page_counts,
                 "total_detections": int(sum(per_page_counts)),
+                "detections_dump": all_detections_dump,  # per-page detailed detections
+            },
+            "debug": {
+                "templates": loaded_templates_info,
+                "notes": "Raw page PNGs stored as page_XXXX_raw.png; normalized templates stored as template_XX.png in work/pages.",
             },
             "timestamps": {"completed": time.time()},
         }
@@ -304,7 +341,6 @@ class PdfLogoReplaceManager:
             "new_logo": new_logo_path,
             "params": params.model_dump(),
             "timestamps": {"created": time.time()},
-            # Future-proof: allow multiple outputs; we will write one now.
             "outputs": [],
         }
         save_metadata(job_id, meta)
@@ -336,7 +372,6 @@ class PdfLogoReplaceManager:
             findings = None
             if "findings" in md:
                 try:
-                    # Rehydrate Findings
                     pages = [
                         PageFindings(
                             page_index=p["page_index"],
@@ -387,12 +422,10 @@ class PdfLogoReplaceManager:
         md = load_metadata_safely(job_id)
         if not md:
             return None
-        # Prefer explicit outputs list if present
         outputs = md.get("outputs") or []
         out_pdf = md.get("output_pdf")
         path: Optional[str] = None
         if outputs and isinstance(outputs, list):
-            # choose first pdf in outputs
             for item in outputs:
                 if isinstance(item, dict) and item.get("type") == "pdf" and item.get("path"):
                     cand = item["path"]
@@ -411,11 +444,7 @@ class PdfLogoReplaceManager:
     # PUBLIC_INTERFACE
     @staticmethod
     def get_all_output_pdfs(job_id: str) -> list[str]:
-        """Return a list of file paths to all generated replaced PDFs for the job.
-
-        For current MVP we generate a single replaced PDF. This method future-proofs
-        for scenarios where multiple PDFs could be produced (e.g., multiple inputs).
-        """
+        """Return a list of file paths to all generated replaced PDFs for the job."""
         md = load_metadata_safely(job_id)
         if not md:
             return []
@@ -426,7 +455,6 @@ class PdfLogoReplaceManager:
                 p = item["path"]
                 if os.path.exists(p):
                     paths.append(p)
-        # Backward compatibility: single output stored in "output_pdf"
         out_pdf = md.get("output_pdf")
         if out_pdf and os.path.exists(out_pdf):
             if out_pdf not in paths:

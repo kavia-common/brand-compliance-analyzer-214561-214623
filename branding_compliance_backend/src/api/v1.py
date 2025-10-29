@@ -615,13 +615,14 @@ def get_results(job_id: str, state: StateStore = Depends(get_state_store)):
 @router.get(
     "/jobs/{job_id}/assets/{asset_id}/preview",
     summary="Get Asset Preview",
-    description="Returns a preview file for the given asset. Query param view=original|overlay|fixed.",
+    description="Returns a preview file for the given asset. Query params: view=original|overlay|fixed, page (for PDFs).",
     tags=["assets"],
 )
 def get_asset_preview(
     job_id: str,
     asset_id: str,
     view: Literal["original", "overlay", "fixed"] = Query("original", description="Preview type"),
+    page: int | None = Query(default=None, description="0-based page index (PDF only)"),
     state: StateStore = Depends(get_state_store),
 ):
     """Serve a preview file based on requested view."""
@@ -634,15 +635,56 @@ def get_asset_preview(
         raise HTTPException(status_code=404, detail="Asset not found")
     w = get_job_workspace(job_id)
 
-    if view == "original":
-        path = w["job"] / asset.rel_path
-    elif view == "overlay":
-        # Stub overlay: if exists, return it, else return original
-        overlay = w["previews"] / f"overlay_{Path(asset.original_filename).stem}.png"
-        path = overlay if overlay.exists() else (w["job"] / asset.rel_path)
-    else:  # fixed
-        fixed_path = w["outputs"] / f"fixed_{asset.original_filename}"
-        path = fixed_path if fixed_path.exists() else (w["job"] / asset.rel_path)
+    # PDF-aware path resolution
+    if getattr(asset, "type", None) and str(asset.type) == "AssetType.pdf" or (hasattr(asset, "type") and asset.type == getattr(type(asset).model_fields['type'].annotation, 'pdf', 'pdf')) or (hasattr(asset, "type") and str(asset.type) == "pdf"):
+        # Normalize check above to avoid enum string mismatch during serialization
+        job_dir = w["job"]
+        pdf_root = job_dir / "pdf"
+        pages_dir = pdf_root / "pages"
+        fixed_pages_dir = pdf_root / "fixed_pages"
+        final_dir = pdf_root / "final"
+
+        if view == "original":
+            if page is None:
+                # Return the original PDF file itself
+                path = job_dir / asset.rel_path
+            else:
+                # Return a rasterized page image
+                cand = pages_dir / f"{page:04d}.png"
+                path = cand if cand.exists() else (job_dir / asset.rel_path)
+        elif view == "overlay":
+            # Use overlay generated during analyze; fall back to page image
+            if page is None:
+                # try to return a composite? fallback to original PDF
+                path = job_dir / asset.rel_path
+            else:
+                overlay = w["previews"] / f"overlay_{Path(pages_dir / f'{page:04d}.png').stem}.png"
+                page_img = pages_dir / f"{page:04d}.png"
+                path = overlay if overlay.exists() else (page_img if page_img.exists() else (job_dir / asset.rel_path))
+        else:  # fixed
+            if page is None:
+                # Return final fixed pdf if exists
+                fixed_pdf = final_dir / "fixed.pdf"
+                alt = w["outputs"] / f"fixed_{Path(asset.original_filename).stem}.pdf"
+                path = fixed_pdf if fixed_pdf.exists() else (alt if alt.exists() else (job_dir / asset.rel_path))
+            else:
+                # Return fixed page image preview
+                cand = fixed_pages_dir / f"{page:04d}.png"
+                if cand.exists():
+                    path = cand
+                else:
+                    # fall back to original raster
+                    op = pages_dir / f"{page:04d}.png"
+                    path = op if op.exists() else (job_dir / asset.rel_path)
+    else:
+        if view == "original":
+            path = w["job"] / asset.rel_path
+        elif view == "overlay":
+            overlay = w["previews"] / f"overlay_{Path(asset.original_filename).stem}.png"
+            path = overlay if overlay.exists() else (w["job"] / asset.rel_path)
+        else:  # fixed
+            fixed_path = w["outputs"] / f"fixed_{asset.original_filename}"
+            path = fixed_path if fixed_path.exists() else (w["job"] / asset.rel_path)
 
     if not path.exists():
         raise HTTPException(status_code=404, detail="Preview not available")

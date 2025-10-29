@@ -11,6 +11,8 @@ from src.models.job import JobStatus
 from src.services.state_store import StateStore
 from src.storage.workspace import get_job_workspace
 from src.services.vision import VisionUtils, DetectorConfig, Detection
+from src.services.pdf_raster import rasterize_pdf
+from src.services.pdf_assembler import assemble_pdf
 
 
 class FixerService:
@@ -20,7 +22,7 @@ class FixerService:
         self.state = state_store
 
     def _load_detections_for_asset(self, job_id: str, asset_rel_path: str) -> List[Detection]:
-        """Read detections from jobs/{id}/work/detections.json for a single asset."""
+        """Read detections from jobs/{id}/work/detections.json for a single asset path key."""
         w = get_job_workspace(job_id)
         det_path = w["job"] / "work" / "detections.json"
         if not det_path.exists():
@@ -53,7 +55,12 @@ class FixerService:
         return files[0] if files else None
 
     def fix_asset(self, job_id: str, asset_id: str) -> Path:
-        """Fix a single asset and place result in outputs/ using detections + new logo."""
+        """Fix a single asset and place result in outputs/ using detections + new logo.
+
+        For PDFs:
+          - Rasterize pages (if not already), apply replacements per page,
+            and reassemble a fixed.pdf under outputs/.
+        """
         w = get_job_workspace(job_id)
         job = self.state.get_job(job_id)
         if job is None:
@@ -67,13 +74,70 @@ class FixerService:
         src = w["job"] / asset.rel_path
         outputs = w["outputs"]
         outputs.mkdir(parents=True, exist_ok=True)
-        dst = outputs / f"fixed_{asset.original_filename}"
 
-        # If detections/new logo are missing, fallback to copy to keep flow working
-        dets = self._load_detections_for_asset(job_id, asset.rel_path)
+        # Select new logo
         new_logo = self._choose_new_logo(job_id)
+        cfg = DetectorConfig()
+
+        # Handle PDFs
+        if src.suffix.lower() == ".pdf":
+            # Directories for pdf workflow
+            pdf_root = w["job"] / "pdf"
+            pages_dir = pdf_root / "pages"
+            fixed_pages_dir = pdf_root / "fixed_pages"
+            final_dir = pdf_root / "final"
+            fixed_pages_dir.mkdir(parents=True, exist_ok=True)
+            final_dir.mkdir(parents=True, exist_ok=True)
+
+            # Rasterize original pages
+            pages, page_sizes = rasterize_pdf(src, pages_dir, dpi=300)
+
+            # Apply replacements per page using detections keyed as "<rel_path>::page:<idx>"
+            page_image_paths: List[Path] = []
+            for page in pages:
+                key = f"{asset.rel_path}::page:{page.index}"
+                dets = self._load_detections_for_asset(job_id, key)
+                src_img = page.image_path
+                out_img = fixed_pages_dir / f"{page.index:04d}.png"
+                if dets and new_logo and new_logo.exists():
+                    VisionUtils.replace_logo(src_img, new_logo, dets, out_img, feather=6, quality_mode=cfg.quality)
+                else:
+                    # copy the page image through to maintain pipeline
+                    try:
+                        shutil.copy2(src_img, out_img)
+                    except Exception:
+                        out_img = src_img
+                page_image_paths.append(out_img if out_img.exists() else src_img)
+
+            # Reassemble into a fixed PDF
+            fixed_pdf = final_dir / "fixed.pdf"
+            assemble_pdf(page_image_paths, fixed_pdf, page_sizes)
+
+            # Update issues status for this asset
+            issues = self.state.list_issues(job_id)
+            updated: List[Issue] = []
+            for i in issues:
+                if i.asset_id == asset_id and i.status != IssueStatus.fixed:
+                    i.status = IssueStatus.fixed
+                updated.append(i)
+            self.state._save_issues(job_id, updated)
+
+            self.state.update_asset_status(job_id, asset_id, AssetStatus.fixed)
+            if job.status not in (JobStatus.fixing, JobStatus.summarizing, JobStatus.completed):
+                self.state.update_job_status(job_id, JobStatus.fixing)
+
+            # Also place a copy in outputs for convenience
+            dst = outputs / f"fixed_{Path(asset.original_filename).stem}.pdf"
+            try:
+                shutil.copy2(fixed_pdf, dst)
+            except Exception:
+                dst = fixed_pdf
+            return dst
+
+        # Default image behavior
+        dst = outputs / f"fixed_{asset.original_filename}"
+        dets = self._load_detections_for_asset(job_id, asset.rel_path)
         if src.exists() and dets and new_logo and new_logo.exists():
-            cfg = DetectorConfig()
             VisionUtils.replace_logo(src, new_logo, dets, dst, feather=6, quality_mode=cfg.quality)
         else:
             if src.exists():
@@ -88,9 +152,7 @@ class FixerService:
             updated.append(i)
         self.state._save_issues(job_id, updated)
 
-        # mark asset as fixed
         self.state.update_asset_status(job_id, asset_id, AssetStatus.fixed)
-        # update job status to fixing if not already
         if job.status not in (JobStatus.fixing, JobStatus.summarizing, JobStatus.completed):
             self.state.update_job_status(job_id, JobStatus.fixing)
 

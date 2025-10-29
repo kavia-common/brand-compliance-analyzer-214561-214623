@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, StrictStr, StrictInt, StrictFloat, Config
 
 class AssetType(str, Enum):
     image = "image"
+    pdf = "pdf"
     document = "document"
     other = "other"
 

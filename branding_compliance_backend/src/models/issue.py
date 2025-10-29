@@ -44,4 +44,5 @@ class Issue(BaseModel):
     score: Optional[StrictFloat] = Field(None, description="Detector confidence score or severity score.")
     suggestions: List[StrictStr] = Field(default_factory=list, description="Suggested fixes or notes.")
     status: IssueStatus = Field(IssueStatus.open, description="Current status of the issue.")
+    page_number: Optional[int] = Field(None, description="For PDFs: 0-based page index where issue was detected.")
     meta: Dict[str, Any] = Field(default_factory=dict, description="Additional structured data for this issue.")

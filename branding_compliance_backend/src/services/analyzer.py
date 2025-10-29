@@ -8,6 +8,7 @@ from typing import List, Dict
 
 from src.models.asset import Asset, AssetStatus, AssetType, BoundingBox
 from src.models.issue import Issue, IssueSeverity, IssueType
+from src.services.pdf_raster import rasterize_pdf
 from src.models.job import JobStatus
 from src.services.state_store import StateStore
 from src.storage.workspace import get_job_workspace
@@ -28,7 +29,9 @@ class AnalyzerService:
         ext = path.suffix.lower()
         if ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"}:
             return AssetType.image
-        if ext in {".pdf", ".docx", ".doc", ".ppt", ".pptx", ".xlsx"}:
+        if ext in {".pdf"}:
+            return AssetType.pdf
+        if ext in {".docx", ".doc", ".ppt", ".pptx", ".xlsx"}:
             return AssetType.document
         return AssetType.other
 
@@ -128,12 +131,11 @@ class AnalyzerService:
             try:
                 w = get_job_workspace(job_id)
                 fpath = w["job"] / a.rel_path
+
                 if a.type == AssetType.image and old_logo_template and fpath.exists():
                     dets = VisionUtils.detect_old_logo(fpath, old_logo_template, cfg)
                     detections_map[a.rel_path] = dets
-                    # generate overlay preview
                     self._overlay_preview(job_id, fpath, dets)
-                    # convert detections to issues
                     for d in dets:
                         iid = str(uuid.uuid4())
                         bbox = BoundingBox(x=d.x, y=d.y, width=d.width, height=d.height, normalized=False)
@@ -151,6 +153,49 @@ class AnalyzerService:
                                 meta={"method": d.method, "points": d.points or []},
                             )
                         )
+
+                elif a.type == AssetType.pdf and fpath.exists() and old_logo_template:
+                    # Rasterize PDF pages to images and run detection per page
+                    pdf_pages_dir = w["job"] / "pdf" / "pages"
+                    pdf_overlays_dir = w["job"] / "pdf" / "overlays"
+                    pdf_pages_dir.mkdir(parents=True, exist_ok=True)
+                    pdf_overlays_dir.mkdir(parents=True, exist_ok=True)
+                    pages, _sizes = rasterize_pdf(fpath, pdf_pages_dir, dpi=300)
+                    # update asset page_count
+                    # load and update asset list object in state
+                    try:
+                        current_assets = self.state.list_assets(job_id)
+                        for asset in current_assets:
+                            if asset.id == a.id:
+                                asset.page_count = len(pages)
+                        self.state._save_assets(job_id, current_assets)
+                    except Exception:
+                        pass
+
+                    for page in pages:
+                        dets = VisionUtils.detect_old_logo(page.image_path, old_logo_template, cfg)
+                        # detections map key per-page for downstream fixer
+                        key = f"{a.rel_path}::page:{page.index}"
+                        detections_map[key] = dets
+                        self._overlay_preview(job_id, page.image_path, dets)
+                        for d in dets:
+                            iid = str(uuid.uuid4())
+                            bbox = BoundingBox(x=d.x, y=d.y, width=d.width, height=d.height, normalized=False)
+                            issues_to_add.append(
+                                Issue(
+                                    id=iid,
+                                    job_id=job_id,
+                                    asset_id=a.id,
+                                    type=IssueType.old_logo,
+                                    severity=IssueSeverity.high if d.score >= 0.8 else IssueSeverity.medium,
+                                    message=f"Old logo detected on page {page.index} ({d.method})",
+                                    bbox=bbox,
+                                    score=d.score,
+                                    suggestions=["Replace with new brand asset."],
+                                    page_number=page.index,
+                                    meta={"method": d.method, "points": d.points or [], "page_index": page.index},
+                                )
+                            )
                 else:
                     # Keep heuristic to still demonstrate non-logo issues
                     h = None

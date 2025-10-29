@@ -4,6 +4,8 @@ import json
 import os
 from typing import Any, Dict, Optional
 
+from src.services.json_utils import normalize_for_json_inplace
+
 STORAGE_ROOT = os.path.join(os.getcwd(), "storage")
 
 
@@ -79,10 +81,11 @@ def ensure_job_dirs(job_id: str) -> None:
 
 
 def save_metadata(job_id: str, data: Dict[str, Any]) -> None:
-    """Persist job metadata to disk."""
+    """Persist job metadata to disk. Ensures JSON-serializable native types."""
     path = metadata_path(job_id)
+    safe = normalize_for_json_inplace(data)
     with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(safe, f, indent=2)
 
 
 def load_metadata(job_id: str) -> Dict[str, Any]:
@@ -93,6 +96,7 @@ def load_metadata(job_id: str) -> Dict[str, Any]:
 
 
 def load_metadata_safely(job_id: str) -> Optional[Dict[str, Any]]:
+    """Load job metadata and return None on any error."""
     try:
         return load_metadata(job_id)
     except Exception:

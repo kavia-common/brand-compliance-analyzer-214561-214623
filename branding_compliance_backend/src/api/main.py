@@ -14,6 +14,7 @@ from src.models.schemas import (
     StartRequestParams,
     StatusResponse,
 )
+from src.services.json_utils import to_native_jsonable
 from src.tasks.pdf_pipeline import PdfLogoReplaceManager
 from src.storage.paths import ensure_storage_root, load_metadata_safely
 
@@ -99,7 +100,7 @@ async def start_logo_replace_job(
         new_logo_file=new_logo,
         params=params,
     )
-    return {"job_id": job_id}
+    return to_native_jsonable({"job_id": job_id})
 
 
 # PUBLIC_INTERFACE
@@ -114,7 +115,9 @@ def get_status(job_id: str):
     status = PdfLogoReplaceManager.get_status(job_id)
     if status is None:
         raise HTTPException(status_code=404, detail="Job not found.")
-    return status
+    # Convert pydantic model to dict then normalize to ensure JSON-safe output
+    status_dict = status.model_dump() if hasattr(status, "model_dump") else dict(status)
+    return to_native_jsonable(status_dict)
 
 
 # PUBLIC_INTERFACE
@@ -146,7 +149,7 @@ def confirm_job(job_id: str):
     ok = PdfLogoReplaceManager.confirm(job_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Job not found.")
-    return {"status": "confirmed"}
+    return to_native_jsonable({"status": "confirmed"})
 
 
 # PUBLIC_INTERFACE
@@ -314,4 +317,4 @@ def verify_last_job():
 
     srp = StartRequestParams(dpi=dpi, max_pages=params.get("max_pages"), match_threshold=match_threshold)
     job_id = PdfLogoReplaceManager.create_job_and_start(pdf_up, old_ups, new_up, srp)
-    return {"verification_job_id": job_id, "source_job_id": latest, "params_used": srp.model_dump()}
+    return to_native_jsonable({"verification_job_id": job_id, "source_job_id": latest, "params_used": srp.model_dump()})

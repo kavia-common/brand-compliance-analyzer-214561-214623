@@ -21,6 +21,7 @@ from src.services.image_utils import (
     Detection,
     feature_match_fallback,
 )
+from src.services.json_utils import to_native_jsonable
 from src.storage.paths import (
     ensure_job_dirs,
     input_pdfs_dir,
@@ -272,6 +273,8 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
             },
             "timestamps": {"completed": time.time()},
         }
+        # Normalize to native types prior to saving
+        meta = to_native_jsonable(meta)
         save_metadata(job_id, meta)
 
         # Update in-memory status
@@ -293,6 +296,7 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
                 "timestamps": {**meta.get("timestamps", {}), "failed": time.time()},
             }
         )
+        meta = to_native_jsonable(meta)
         save_metadata(job_id, meta)
         _update_status(job_id, status="failed", message=str(e))
 
@@ -343,6 +347,7 @@ class PdfLogoReplaceManager:
             "timestamps": {"created": time.time()},
             "outputs": [],
         }
+        meta = to_native_jsonable(meta)
         save_metadata(job_id, meta)
 
         # Register and spawn worker thread
@@ -411,6 +416,7 @@ class PdfLogoReplaceManager:
         if md.get("status") != "completed":
             return False
         md["confirmed"] = True
+        md = to_native_jsonable(md)
         save_metadata(job_id, md)
         _update_status(job_id, message="Confirmed")
         return True

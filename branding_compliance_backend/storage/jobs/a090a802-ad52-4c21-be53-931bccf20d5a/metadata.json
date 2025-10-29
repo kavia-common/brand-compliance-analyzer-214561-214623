@@ -1,0 +1,8 @@
+{
+  "job_id": "a090a802-ad52-4c21-be53-931bccf20d5a",
+  "status": "failed",
+  "message": "Object of type int64 is not JSON serializable",
+  "timestamps": {
+    "failed": 1761735157.0708904
+  }
+}

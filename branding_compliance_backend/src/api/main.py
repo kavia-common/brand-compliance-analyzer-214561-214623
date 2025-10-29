@@ -29,13 +29,19 @@ app = FastAPI(
 # IMPORTANT: CORS MUST be the first middleware so it applies globally to all routes and routers.
 # TODO(security): Revert to strict allow_origins list once 500 error diagnosis is complete.
 # Temporarily allow any origin/method/header to unblock the frontend during investigation.
+# Configure strict CORS to only allow the running frontend origin.
+# Note: If you run the frontend on a different preview host, add it to this list or use env vars.
+ALLOWED_ORIGINS = [
+    "https://vscode-internal-14161-beta.beta01.cloud.kavia.ai:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
 )
 
 # Global state store instance; in larger apps this would be managed via DI container
@@ -85,8 +91,8 @@ def cors_check(request: Request):
         "ok": True,
         "origin": request.headers.get("origin"),
         "method": request.method,
-        "allowed_origins": ["*"],  # reflects temporary permissive CORS
-        "allow_credentials": False,
+        "allowed_origins": ALLOWED_ORIGINS,
+        "allow_credentials": True,
     }
 
 # PUBLIC_INTERFACE
@@ -112,12 +118,12 @@ def api_notes():
         "downloads": "Use /api/v1/jobs/{job_id}/download?type=zip|report|both; server sets Content-Disposition and proper Content-Type.",
         "public_files": "Outputs are served under /outputs/{job_id}/outputs/<file_name> for direct browser access.",
         "cors": {
-            "allow_origins": ["*"],
+            "allow_origins": ALLOWED_ORIGINS,
             "allow_methods": ["*"],
             "allow_headers": ["*"],
             "expose_headers": ["*"],
-            "allow_credentials": False,
-            "note": "Temporary permissive CORS to unblock frontend during investigation. TODO: restrict to specific origins via PREVIEW_FRONTEND_ORIGIN and CORS_EXTRA_ORIGINS.",
+            "allow_credentials": True,
+            "note": "CORS restricted to preview frontend origin. Update ALLOWED_ORIGINS or use env-based configuration if your preview hostname differs.",
         },
     }
 

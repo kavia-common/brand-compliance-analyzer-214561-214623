@@ -214,7 +214,10 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
             "progress": 1.0,
             "message": "Completed",
             "input_pdf": pdf_path,
-            "output_pdf": out_pdf,
+            "output_pdf": out_pdf,  # backward compatibility
+            "outputs": [
+                {"type": "pdf", "path": out_pdf, "label": "replaced"}
+            ],
             "params": params.model_dump(),
             "findings": {
                 "total_pages": total_pages,
@@ -291,6 +294,8 @@ class PdfLogoReplaceManager:
             "new_logo": new_logo_path,
             "params": params.model_dump(),
             "timestamps": {"created": time.time()},
+            # Future-proof: allow multiple outputs; we will write one now.
+            "outputs": [],
         }
         save_metadata(job_id, meta)
 
@@ -372,10 +377,48 @@ class PdfLogoReplaceManager:
         md = load_metadata_safely(job_id)
         if not md:
             return None
+        # Prefer explicit outputs list if present
+        outputs = md.get("outputs") or []
         out_pdf = md.get("output_pdf")
-        if not out_pdf or not os.path.exists(out_pdf):
+        path: Optional[str] = None
+        if outputs and isinstance(outputs, list):
+            # choose first pdf in outputs
+            for item in outputs:
+                if isinstance(item, dict) and item.get("type") == "pdf" and item.get("path"):
+                    cand = item["path"]
+                    if os.path.exists(cand):
+                        path = cand
+                        break
+        if path is None:
+            path = out_pdf
+        if not path or not os.path.exists(path):
             return None
-        with open(out_pdf, "rb") as f:
+        with open(path, "rb") as f:
             data = f.read()
-        filename = os.path.basename(out_pdf)
+        filename = os.path.basename(path)
         return filename, data
+
+    # PUBLIC_INTERFACE
+    @staticmethod
+    def get_all_output_pdfs(job_id: str) -> list[str]:
+        """Return a list of file paths to all generated replaced PDFs for the job.
+
+        For current MVP we generate a single replaced PDF. This method future-proofs
+        for scenarios where multiple PDFs could be produced (e.g., multiple inputs).
+        """
+        md = load_metadata_safely(job_id)
+        if not md:
+            return []
+        paths: list[str] = []
+        outputs = md.get("outputs") or []
+        for item in outputs:
+            if isinstance(item, dict) and item.get("type") == "pdf" and item.get("path"):
+                p = item["path"]
+                if os.path.exists(p):
+                    paths.append(p)
+        # Backward compatibility: single output stored in "output_pdf"
+        out_pdf = md.get("output_pdf")
+        if out_pdf and os.path.exists(out_pdf):
+            if out_pdf not in paths:
+                paths.append(out_pdf)
+        return paths

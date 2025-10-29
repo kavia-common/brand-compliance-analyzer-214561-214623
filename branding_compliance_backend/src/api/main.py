@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
@@ -152,6 +153,11 @@ def confirm_job(job_id: str):
     description="Downloads the corrected/replaced PDF for the given job_id.",
 )
 def download_replaced_pdf(job_id: str):
+    """Download the single replaced PDF for this job.
+
+    Returns:
+        application/pdf stream with Content-Disposition attachment.
+    """
     data = PdfLogoReplaceManager.get_download(job_id)
     if data is None:
         # Try to give a more descriptive message if available in metadata
@@ -163,6 +169,60 @@ def download_replaced_pdf(job_id: str):
     return Response(
         content=payload,
         media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+
+# PUBLIC_INTERFACE
+@app.get(
+    "/pdf/logo-replace/download-zip/{job_id}",
+    tags=["PDF Logo Replace"],
+    summary="Download all replaced PDFs as ZIP",
+    description="Bundles all generated replaced PDFs for the job into a ZIP archive and streams it.",
+)
+def download_replaced_zip(job_id: str):
+    """Stream a ZIP file containing one or more replaced PDFs.
+
+    Parameters:
+        job_id: The job identifier.
+
+    Returns:
+        application/zip StreamingResponse with Content-Disposition attachment.
+
+    Raises:
+        404 if no outputs are found for the job.
+        409 if the job is not completed yet.
+    """
+    from src.services.zip_utils import create_zip_from_files  # local import to avoid cycles
+
+    # Gather output PDFs
+    paths = PdfLogoReplaceManager.get_all_output_pdfs(job_id)
+    if not paths:
+        md = load_metadata_safely(job_id)
+        if md and md.get("status") != "completed":
+            raise HTTPException(status_code=409, detail="Job is not yet completed.")
+        raise HTTPException(status_code=404, detail="No outputs available for this job.")
+
+    # Build iterable of (arcname, file_path)
+    pairs = []
+    for p in paths:
+        arc = os.path.basename(p)
+        pairs.append((arc, p))
+
+    # Create zip bytes in memory; for large files consider chunked streaming
+    try:
+        zip_bytes = create_zip_from_files(pairs)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="One or more output files missing.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build zip: {str(e)}")
+
+    filename = f"job_{job_id}_outputs.zip"
+    return StreamingResponse(
+        io.BytesIO(zip_bytes),
+        media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"'
         },

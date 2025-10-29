@@ -13,6 +13,7 @@ from src.models.job import JobStatus
 from src.services.state_store import StateStore
 from src.storage.workspace import get_job_workspace
 from src.services.vision import VisionUtils, DetectorConfig, Detection
+import logging
 
 
 class AnalyzerService:
@@ -128,6 +129,8 @@ class AnalyzerService:
 
         old_logo_template = self._choose_old_logo_template(job_id)
         cfg = DetectorConfig()
+        log = logging.getLogger("analyzer.run")
+        log.info("analyze:job_start job_id=%s old_logo=%s detector=%s quality=%s", job_id, old_logo_template, cfg.detector, cfg.quality)
 
         detections_map: Dict[str, List[Detection]] = {}
         issues_to_add: List[Issue] = []
@@ -140,6 +143,7 @@ class AnalyzerService:
                 if a.type == AssetType.image and old_logo_template and fpath.exists():
                     dets = VisionUtils.detect_old_logo(fpath, old_logo_template, cfg)
                     detections_map[a.rel_path] = dets
+                    log.info("analyze:image_detections rel_path=%s count=%d", a.rel_path, len(dets))
                     self._overlay_preview(job_id, fpath, dets)
                     for d in dets:
                         iid = str(uuid.uuid4())
@@ -166,22 +170,25 @@ class AnalyzerService:
                     pdf_pages_dir.mkdir(parents=True, exist_ok=True)
                     pdf_overlays_dir.mkdir(parents=True, exist_ok=True)
                     pages, _sizes = rasterize_pdf(fpath, pdf_pages_dir, dpi=300)
-                    # update asset page_count
-                    # load and update asset list object in state
+                    log.info("analyze:pdf_rasterized rel_path=%s page_count=%d out_dir=%s", a.rel_path, len(pages), pdf_pages_dir)
+
+                    # update asset page_count and persist immediately
                     try:
                         current_assets = self.state.list_assets(job_id)
                         for asset in current_assets:
                             if asset.id == a.id:
                                 asset.page_count = len(pages)
                         self.state._save_assets(job_id, current_assets)
-                    except Exception:
-                        pass
+                        log.info("analyze:asset_page_count_set asset_id=%s pages=%d", a.id, len(pages))
+                    except Exception as e:
+                        log.warning("analyze:page_count_save_failed asset_id=%s err=%s", a.id, e)
 
                     for page in pages:
                         dets = VisionUtils.detect_old_logo(page.image_path, old_logo_template, cfg)
                         # detections map key per-page for downstream fixer
                         key = f"{a.rel_path}::page:{page.index}"
                         detections_map[key] = dets
+                        log.info("analyze:pdf_page_detections rel_path=%s page=%d count=%d", a.rel_path, page.index, len(dets))
                         # Save per-page overlay to previews with page index in filename
                         self._overlay_preview(job_id, page.image_path, dets, page_index=page.index)
                         for d in dets:

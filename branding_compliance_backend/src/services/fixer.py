@@ -13,6 +13,7 @@ from src.storage.workspace import get_job_workspace
 from src.services.vision import VisionUtils, DetectorConfig, Detection
 from src.services.pdf_raster import rasterize_pdf
 from src.services.pdf_assembler import assemble_pdf
+import logging
 
 
 class FixerService:
@@ -81,6 +82,7 @@ class FixerService:
 
         # Handle PDFs
         if src.suffix.lower() == ".pdf":
+            log = logging.getLogger("fixer.pdf")
             # Directories for pdf workflow
             pdf_root = w["job"] / "pdf"
             pages_dir = pdf_root / "pages"
@@ -91,6 +93,7 @@ class FixerService:
 
             # Rasterize original pages
             pages, page_sizes = rasterize_pdf(src, pages_dir, dpi=300)
+            log.info("fix:pdf_rasterized asset=%s pages=%d", asset.id, len(pages))
 
             # Apply replacements per page using detections keyed as "<rel_path>::page:<idx>"
             page_image_paths: List[Path] = []
@@ -100,8 +103,10 @@ class FixerService:
                 src_img = page.image_path
                 out_img = fixed_pages_dir / f"{page.index:04d}.png"
                 if dets and new_logo and new_logo.exists():
+                    log.info("fix:apply_page asset=%s page=%d dets=%d", asset.id, page.index, len(dets))
                     VisionUtils.replace_logo(src_img, new_logo, dets, out_img, feather=6, quality_mode=cfg.quality)
                 else:
+                    log.info("fix:copy_page asset=%s page=%d dets=0", asset.id, page.index)
                     # copy the page image through to maintain pipeline
                     try:
                         shutil.copy2(src_img, out_img)
@@ -112,6 +117,7 @@ class FixerService:
             # Reassemble into a fixed PDF
             fixed_pdf = final_dir / "fixed.pdf"
             assemble_pdf(page_image_paths, fixed_pdf, page_sizes)
+            log.info("fix:assembled_pdf asset=%s pages=%d out=%s", asset.id, len(page_image_paths), fixed_pdf)
 
             # Update issues status for this asset
             issues = self.state.list_issues(job_id)

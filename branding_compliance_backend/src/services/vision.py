@@ -122,11 +122,29 @@ class VisionUtils:
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         templ_gray = cv2.cvtColor(templ, cv2.COLOR_BGR2GRAY)
 
+        # Normalize lighting/contrast slightly to improve robustness
+        img_gray = cv2.normalize(img_gray, None, 0, 255, cv2.NORM_MINMAX)
+        templ_gray = cv2.normalize(templ_gray, None, 0, 255, cv2.NORM_MINMAX)
+
         detections: List[Detection] = []
+        log = logging.getLogger("vision.detect")
+        log.info("detect:start image=%s template=%s detector=%s quality=%s", image_path, template_path, cfg.detector, cfg.quality)
 
         def _template_multi_scale() -> List[Detection]:
             dets: List[Detection] = []
-            for scale in cfg.scales:
+            # Support scale range 0.5–2.0 under best quality to increase robustness
+            scales = cfg.scales
+            if cfg.quality == "best":
+                extra = [1.8, 1.6, 1.4, 1.3, 1.1, 0.95, 0.85, 0.65, 0.55]
+                # ensure uniqueness while preserving order
+                seen = set()
+                merged = []
+                for s in list(scales) + extra:
+                    if s not in seen:
+                        seen.add(s)
+                        merged.append(s)
+                scales = merged
+            for scale in scales:
                 # Resize template for this scale
                 if abs(scale - 1.0) < 1e-3:
                     t_scaled = templ_gray
@@ -136,24 +154,35 @@ class VisionUtils:
                     t_scaled = cv2.resize(templ_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
                 if t_scaled.shape[0] >= img_gray.shape[0] or t_scaled.shape[1] >= img_gray.shape[1]:
                     continue
-                res = cv2.matchTemplate(img_gray, t_scaled, cv2.TM_CCOEFF_NORMED)
-                # Threshold selection based on quality
-                if cfg.quality == "best":
-                    thr = 0.7
-                elif cfg.quality == "fast":
-                    thr = 0.8
-                else:
-                    thr = 0.75
-                loc = np.where(res >= thr)
-                w, h = t_scaled.shape[1], t_scaled.shape[0]
-                # Collect raw matches
-                for pt in zip(*loc[::-1]):
-                    score = float(res[pt[1], pt[0]])
-                    dets.append(Detection(
-                        x=float(pt[0]), y=float(pt[1]),
-                        width=float(w), height=float(h),
-                        score=score, method="template", points=None
-                    ))
+                # Try multiple rotations for tolerance (e.g., -15, 0, +15)
+                for angle in (-15, 0, 15):
+                    if angle != 0:
+                        center = (t_scaled.shape[1] // 2, t_scaled.shape[0] // 2)
+                        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+                        t_rot = cv2.warpAffine(t_scaled, M, (t_scaled.shape[1], t_scaled.shape[0]), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+                    else:
+                        t_rot = t_scaled
+                    if t_rot.shape[0] >= img_gray.shape[0] or t_rot.shape[1] >= img_gray.shape[1]:
+                        continue
+                    res = cv2.matchTemplate(img_gray, t_rot, cv2.TM_CCOEFF_NORMED)
+                    # Threshold selection based on quality
+                    if cfg.quality == "best":
+                        thr = 0.68
+                    elif cfg.quality == "fast":
+                        thr = 0.82
+                    else:
+                        thr = 0.75
+                    loc = np.where(res >= thr)
+                    w, h = t_rot.shape[1], t_rot.shape[0]
+                    # Collect raw matches
+                    for pt in zip(*loc[::-1]):
+                        score = float(res[pt[1], pt[0]])
+                        dets.append(Detection(
+                            x=float(pt[0]), y=float(pt[1]),
+                            width=float(w), height=float(h),
+                            score=score, method="template", points=None
+                        ))
+            log.info("detect:template_candidates=%d", len(dets))
             # Non-maximum suppression (greedy)
             dets_sorted = sorted(dets, key=lambda d: d.score, reverse=True)
             kept: List[Detection] = []
@@ -185,6 +214,7 @@ class VisionUtils:
                 kp1, des1 = orb.detectAndCompute(templ_gray, None)
                 kp2, des2 = orb.detectAndCompute(img_gray, None)
                 if des1 is None or des2 is None or len(kp1) == 0 or len(kp2) == 0:
+                    log.info("detect:orb_no_descriptors")
                     return dets
                 # BFMatcher with Hamming for ORB
                 bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
@@ -192,8 +222,9 @@ class VisionUtils:
                 good = []
                 # Lowe's ratio test
                 for m, n in matches:
-                    if m.distance < 0.75 * n.distance:
+                    if m.distance < 0.74 * n.distance:
                         good.append(m)
+                log.info("detect:orb_matches total=%d good=%d", len(matches), len(good))
                 if len(good) >= cfg.min_match_count:
                     src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
                     dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
@@ -216,6 +247,42 @@ class VisionUtils:
                             method="orb",
                             points=[(float(x), float(y)) for x, y in dst.tolist()],
                         ))
+                # As a fallback, also try FLANN if available for ORB (LSH index)
+                try:
+                    FLANN_INDEX_LSH = 6
+                    index_params = dict(algorithm=FLANN_INDEX_LSH, table_number=6, key_size=12, multi_probe_level=1)
+                    search_params = dict(checks=50)
+                    flann = cv2.FlannBasedMatcher(index_params, search_params)
+                    matches = flann.knnMatch(des1, des2, k=2)
+                    good_flann = []
+                    for m, n in matches:
+                        if m.distance < 0.75 * n.distance:
+                            good_flann.append(m)
+                    log.info("detect:flann_matches total=%d good=%d", len(matches), len(good_flann))
+                    if len(good_flann) >= cfg.min_match_count and len(good_flann) > len(good):
+                        src_pts = np.float32([kp1[m.queryIdx].pt for m in good_flann]).reshape(-1, 1, 2)
+                        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_flann]).reshape(-1, 1, 2)
+                        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                        if M is not None:
+                            h, w = templ_gray.shape
+                            pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2)
+                            dst = cv2.perspectiveTransform(pts, M).reshape(-1, 2)
+                            xs = dst[:, 0]
+                            ys = dst[:, 1]
+                            x_min, y_min = float(xs.min()), float(ys.min())
+                            x_max, y_max = float(xs.max()), float(ys.max())
+                            score = min(1.0, float(len(good_flann)) / float(cfg.min_match_count + 1))
+                            dets.append(Detection(
+                                x=x_min,
+                                y=y_min,
+                                width=(x_max - x_min),
+                                height=(y_max - y_min),
+                                score=score,
+                                method="orb",
+                                points=[(float(x), float(y)) for x, y in dst.tolist()],
+                            ))
+                except Exception:
+                    pass
             except Exception:
                 # If cv2 ORB pipeline fails, just return empty
                 return dets

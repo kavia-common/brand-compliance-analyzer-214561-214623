@@ -40,3 +40,14 @@ Do not commit secrets. Place environment variables in a local `.env` read by uvi
 
 - Analysis runs asynchronously via background tasks.
 - Use the status/results endpoints to poll progress.
+
+### Troubleshooting CORS / Failed to fetch
+
+If the frontend shows "Failed to fetch" on createJob:
+
+1) Verify the frontend API base points to this backend on port 3001 and includes `/api/v1`.
+2) Check backend CORS: call `GET /cors-check` from a browser tab; response includes `allowed_origins` and a `suggested_frontend_origin`.
+3) Set the environment variable `PREVIEW_FRONTEND_ORIGIN` to your frontend origin (e.g., `https://<host>:3000`) or provide a comma-separated list in `CORS_EXTRA_ORIGINS`.
+4) Restart the backend after changing env vars.
+
+See `.env.example` for variables.

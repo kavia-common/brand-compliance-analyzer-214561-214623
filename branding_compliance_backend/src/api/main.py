@@ -31,18 +31,40 @@ app = FastAPI(
 # Temporarily allow any origin/method/header to unblock the frontend during investigation.
 # Configure strict CORS to only allow the running frontend origin.
 # Note: If you run the frontend on a different preview host, add it to this list or use env vars.
-ALLOWED_ORIGINS = [
-    "https://vscode-internal-14161-beta.beta01.cloud.kavia.ai:3000",
-]
+import os
+# Build allowed origins from environment and detected preview hostname.
+# Default: allow https://<this-host>:3000
+_default_host = os.getenv("HOSTNAME")  # may not carry full domain; we use request base_url in /cors-check for verification
+# The platform injects full external hostname in the running URL; since we don't have it at import time,
+# pre-populate with the common preview base domains used by orchestrator if provided via env.
+extra_env_origin = os.getenv("PREVIEW_FRONTEND_ORIGIN", "").strip()
+extra_list = [o.strip() for o in os.getenv("CORS_EXTRA_ORIGINS", "").split(",") if o.strip()]
+
+# Known preview domain for this project family; adjust dynamically using the backend public URL's hostname if available.
+# In absence of that, include common beta01.cloud.kavia.ai wildcard not supported, so we leave list to explicit values only.
+ALLOWED_ORIGINS = set()
+if extra_env_origin:
+    ALLOWED_ORIGINS.add(extra_env_origin)
+for o in extra_list:
+    ALLOWED_ORIGINS.add(o)
+
+# Heuristic: if running behind a preview with a public URL like https://<host>:3001, the frontend runs at :3000 on same host.
+# We cannot know the exact host here; as a safe default, include the host derived at runtime in cors_check.
+# Also include a typical localhost dev origin.
+ALLOWED_ORIGINS.update({
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+})
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=list(ALLOWED_ORIGINS),
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
     allow_credentials=True,
 )
+logger.info("CORS configured allow_origins=%s", list(ALLOWED_ORIGINS))
 
 # Global state store instance; in larger apps this would be managed via DI container
 state_store = StateStore()
@@ -87,12 +109,33 @@ def cors_check(request: Request):
     Returns:
         JSON with origin and method; use OPTIONS to validate preflight behavior (204 expected).
     """
+    origin = request.headers.get("origin")
+    try:
+        logger.info("CORS check: origin=%s method=%s base_url=%s", origin, request.method, str(request.base_url))
+    except Exception:
+        pass
+    # Suggest frontend origin based on backend host (same host, port 3000)
+    suggested_frontend = None
+    try:
+        base = str(request.base_url).rstrip("/")
+        # Convert https://host:3001 -> https://host:3000
+        # naive split
+        from urllib.parse import urlparse
+        p = urlparse(base)
+        host_port = p.netloc.split(":")
+        host_only = host_port[0]
+        suggested_frontend = f"{p.scheme}://{host_only}:3000"
+    except Exception:
+        suggested_frontend = None
+
     return {
         "ok": True,
-        "origin": request.headers.get("origin"),
+        "origin": origin,
         "method": request.method,
-        "allowed_origins": ALLOWED_ORIGINS,
+        "allowed_origins": list(ALLOWED_ORIGINS),
         "allow_credentials": True,
+        "suggested_frontend_origin": suggested_frontend,
+        "note": "If your frontend origin is not listed, set PREVIEW_FRONTEND_ORIGIN or CORS_EXTRA_ORIGINS env."
     }
 
 # PUBLIC_INTERFACE

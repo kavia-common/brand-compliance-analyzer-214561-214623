@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict
@@ -163,10 +164,11 @@ class AnalyzerService:
                             )
                         )
 
-                elif a.type == AssetType.pdf and fpath.exists() and old_logo_template:
-                    # Rasterize PDF pages to images and run detection per page
-                    pdf_pages_dir = w["job"] / "pdf" / "pages"
-                    pdf_overlays_dir = w["job"] / "pdf" / "overlays"
+                elif a.type == AssetType.pdf and fpath.exists():
+                    # Rasterize PDF pages to images and optionally run detection per page
+                    pdf_root = w["job"] / "pdf"
+                    pdf_pages_dir = pdf_root / "pages"
+                    pdf_overlays_dir = pdf_root / "overlays"
                     pdf_pages_dir.mkdir(parents=True, exist_ok=True)
                     pdf_overlays_dir.mkdir(parents=True, exist_ok=True)
                     pages, _sizes = rasterize_pdf(fpath, pdf_pages_dir, dpi=300)
@@ -183,32 +185,51 @@ class AnalyzerService:
                     except Exception as e:
                         log.warning("analyze:page_count_save_failed asset_id=%s err=%s", a.id, e)
 
+                    # Maintain a simple map of page index -> asset info to assist API with ownership
+                    try:
+                        page_map_path = pdf_root / "page_map.json"
+                        page_map: dict[str, dict] = {}
+                        if page_map_path.exists():
+                            try:
+                                page_map = json.loads(page_map_path.read_text(encoding="utf-8")) or {}
+                            except Exception:
+                                page_map = {}
+                        for page in pages:
+                            page_map[str(page.index)] = {"asset_id": a.id, "asset_rel_path": a.rel_path}
+                        page_map_path.parent.mkdir(parents=True, exist_ok=True)
+                        page_map_path.write_text(json.dumps(page_map, indent=2), encoding="utf-8")
+                    except Exception:
+                        # non-fatal
+                        pass
+
                     for page in pages:
-                        dets = VisionUtils.detect_old_logo(page.image_path, old_logo_template, cfg)
-                        # detections map key per-page for downstream fixer
-                        key = f"{a.rel_path}::page:{page.index}"
-                        detections_map[key] = dets
-                        log.info("analyze:pdf_page_detections rel_path=%s page=%d count=%d", a.rel_path, page.index, len(dets))
-                        # Save per-page overlay to previews with page index in filename
-                        self._overlay_preview(job_id, page.image_path, dets, page_index=page.index)
-                        for d in dets:
-                            iid = str(uuid.uuid4())
-                            bbox = BoundingBox(x=d.x, y=d.y, width=d.width, height=d.height, normalized=False)
-                            issues_to_add.append(
-                                Issue(
-                                    id=iid,
-                                    job_id=job_id,
-                                    asset_id=a.id,
-                                    type=IssueType.old_logo,
-                                    severity=IssueSeverity.high if d.score >= 0.8 else IssueSeverity.medium,
-                                    message=f"Old logo detected on page {page.index} ({d.method})",
-                                    bbox=bbox,
-                                    score=d.score,
-                                    suggestions=["Replace with new brand asset."],
-                                    page_number=page.index,
-                                    meta={"method": d.method, "points": d.points or [], "page_index": page.index},
+                        dets = []
+                        if old_logo_template:
+                            dets = VisionUtils.detect_old_logo(page.image_path, old_logo_template, cfg)
+                            # detections map key per-page for downstream fixer
+                            key = f"{a.rel_path}::page:{page.index}"
+                            detections_map[key] = dets
+                            log.info("analyze:pdf_page_detections rel_path=%s page=%d count=%d", a.rel_path, page.index, len(dets))
+                            # Save per-page overlay to previews with page index in filename
+                            self._overlay_preview(job_id, page.image_path, dets, page_index=page.index)
+                            for d in dets:
+                                iid = str(uuid.uuid4())
+                                bbox = BoundingBox(x=d.x, y=d.y, width=d.width, height=d.height, normalized=False)
+                                issues_to_add.append(
+                                    Issue(
+                                        id=iid,
+                                        job_id=job_id,
+                                        asset_id=a.id,
+                                        type=IssueType.old_logo,
+                                        severity=IssueSeverity.high if d.score >= 0.8 else IssueSeverity.medium,
+                                        message=f"Old logo detected on page {page.index} ({d.method})",
+                                        bbox=bbox,
+                                        score=d.score,
+                                        suggestions=["Replace with new brand asset."],
+                                        page_number=page.index,
+                                        meta={"method": d.method, "points": d.points or [], "page_index": page.index},
+                                    )
                                 )
-                            )
                 else:
                     # Keep heuristic to still demonstrate non-logo issues
                     h = None

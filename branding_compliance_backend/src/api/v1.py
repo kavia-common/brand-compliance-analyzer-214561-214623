@@ -9,11 +9,12 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, Request
 from typing import List
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 import mimetypes
 import logging
 import os
 import json
+import io
 from pydantic import BaseModel, Field, StrictStr
 
 from src.api.errors import error_response
@@ -98,6 +99,52 @@ def _build_public_url_for_output(request: Request, output_path: Path) -> str | N
         return None
 
 
+def _png_placeholder(message: str, width: int = 800, height: int = 450) -> Response:
+    """
+    Generate a simple PNG with the given message for cases where a preview image is not available.
+
+    Returns:
+        Starlette Response with image/png content.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        img = Image.new("RGBA", (width, height), (245, 245, 245, 255))
+        draw = ImageDraw.Draw(img)
+        title = "Preview not available"
+        # Attempt to use a default font; fallback to basic
+        try:
+            font_title = ImageFont.load_default()
+            font_msg = ImageFont.load_default()
+        except Exception:
+            font_title = None
+            font_msg = None
+
+        # Center the text roughly
+        tw, th = draw.textsize(title, font=font_title)
+        draw.text(((width - tw) / 2, height * 0.35), title, fill=(80, 80, 80, 255), font=font_title)
+        # Multi-line message
+        lines = [message]
+        y = height * 0.35 + th + 16
+        for line in lines:
+            lw, lh = draw.textsize(line, font=font_msg)
+            draw.text(((width - lw) / 2, y), line, fill=(100, 100, 100, 255), font=font_msg)
+            y += lh + 4
+
+        bio = io.BytesIO()
+        img.convert("RGB").save(bio, format="PNG")
+        bio.seek(0)
+        headers = {"X-Placeholder": "1"}
+        return Response(content=bio.getvalue(), media_type="image/png", headers=headers)
+    except Exception:
+        # Fallback: return a minimal 1x1 PNG if Pillow is unavailable
+        minimal_png = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0bIDAT\x08\xd7c\xf8\x0f"
+            b"\x00\x01\x01\x01\x00\x18\xdd\x8d\xf7\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        return Response(content=minimal_png, media_type="image/png", headers={"X-Placeholder": "1"})
+
+
 # Request/Response Models
 
 # PUBLIC_INTERFACE
@@ -145,6 +192,7 @@ class BatchFixRequest(BaseModel):
 class PageEntry(BaseModel):
     """Represents one PDF page preview entry."""
     index: int = Field(..., description="0-based page index")
+    asset_id: Optional[str] = Field(None, description="Owning asset id if known (PDF)")
     status: str = Field(..., description="Page status: detected|fixed|skipped|pending")
     original_url: str = Field(..., description="Preview URL for original rasterized page")
     overlay_url: str = Field(..., description="Preview URL with detection overlay if available")
@@ -657,7 +705,7 @@ def get_asset_preview(
                if page is None, returns rebuilt fixed.pdf if present, else the original PDF.
 
     Returns:
-        FileResponse of the requested preview.
+        FileResponse of the requested preview or a PNG placeholder if the page image is missing.
 
     Notes:
         - Use ?page=N to access specific pages of PDFs.
@@ -667,13 +715,17 @@ def get_asset_preview(
     if state.get_job(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    log = logging.getLogger("api.asset_preview")
+
     assets = state.list_assets(job_id)
     asset = next((a for a in assets if a.id == asset_id), None)
     if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
     w = get_job_workspace(job_id)
 
+    # Consider both Enum string and value for robustness
     is_pdf = str(getattr(asset, "type", "")) in ("AssetType.pdf", "pdf")
+
     # Validate page range if provided and page_count known
     if is_pdf and page is not None:
         if page < 0:
@@ -693,15 +745,24 @@ def get_asset_preview(
                 path = job_dir / asset.rel_path
             else:
                 cand = pages_dir / f"{page:04d}.png"
-                path = cand if cand.exists() else (job_dir / asset.rel_path)
+                if not cand.exists():
+                    log.warning("asset_preview:missing_page_png job_id=%s asset_id=%s page=%s", job_id, asset_id, page)
+                    return _png_placeholder(f"job {job_id} - page {page} not rasterized yet")
+                path = cand
         elif view == "overlay":
             if page is None:
                 path = job_dir / asset.rel_path
             else:
-                # overlays saved as overlay_{page-stem}_p{index}.png in previews
                 overlay = w["previews"] / f"overlay_{(pages_dir / f'{page:04d}.png').stem}_p{page:04d}.png"
                 page_img = pages_dir / f"{page:04d}.png"
-                path = overlay if overlay.exists() else (page_img if page_img.exists() else (job_dir / asset.rel_path))
+                if overlay.exists():
+                    path = overlay
+                elif page_img.exists():
+                    log.info("asset_preview:overlay_missing job_id=%s asset_id=%s page=%s -> original", job_id, asset_id, page)
+                    path = page_img
+                else:
+                    log.warning("asset_preview:missing_page_png job_id=%s asset_id=%s page=%s", job_id, asset_id, page)
+                    return _png_placeholder(f"job {job_id} - page {page} not rasterized yet")
         else:  # fixed
             if page is None:
                 fixed_pdf = final_dir / "fixed.pdf"
@@ -713,7 +774,11 @@ def get_asset_preview(
                     path = cand
                 else:
                     op = pages_dir / f"{page:04d}.png"
-                    path = op if op.exists() else (job_dir / asset.rel_path)
+                    if op.exists():
+                        path = op
+                    else:
+                        log.warning("asset_preview:missing_fixed_and_original_png job_id=%s asset_id=%s page=%s", job_id, asset_id, page)
+                        return _png_placeholder(f"job {job_id} - page {page} fixed not available yet")
     else:
         if view == "original":
             path = w["job"] / asset.rel_path
@@ -725,6 +790,7 @@ def get_asset_preview(
             path = fixed_path if fixed_path.exists() else (w["job"] / asset.rel_path)
 
     if not path.exists():
+        log.warning("asset_preview:path_missing job_id=%s asset_id=%s view=%s path=%s", job_id, asset_id, view, path)
         raise HTTPException(status_code=404, detail="Preview not available")
     guessed, _ = mimetypes.guess_type(str(path))
     media_type = guessed or "application/octet-stream"
@@ -808,6 +874,11 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
       - detected if detections.json has >=1 detection with score >= 0.75
       - skipped if no detections above threshold
       - pending if pages exist but analysis has not produced overlays/detections
+
+    Asset mapping:
+      - If a page_map.json exists under jobs/{id}/pdf/, use it to associate page indices to asset ids.
+      - Else, infer from detections.json keys by matching the base rel_path against assets list.
+      - If still ambiguous and a single PDF asset exists, attribute all pages to that asset.
     """
     if state.get_job(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -819,6 +890,19 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
 
     if not pages_dir.exists():
         return {"job_id": job_id, "total": 0, "pages": []}
+
+    # load assets to help map page->asset_id
+    assets = {a.rel_path: a for a in state.list_assets(job_id)}
+    pdf_assets = [a for a in assets.values() if str(getattr(a, "type", "")) in ("AssetType.pdf", "pdf")]
+
+    # Optional page map
+    page_map_path = pdf_root / "page_map.json"
+    page_map: dict[str, dict] = {}
+    if page_map_path.exists():
+        try:
+            page_map = json.loads(page_map_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            page_map = {}
 
     # load detections if available
     det_map_path = job_dir / "work" / "detections.json"
@@ -837,10 +921,39 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
         idx = int(p.stem)
         # Determine detection count by suffix matching "::page:<idx>"
         det_count = 0
-        for k, arr in detections_json.items():
-            if k.endswith(f"::page:{idx}"):
-                det_count = sum(1 for d in (arr or []) if float(d.get("score", 0.0)) >= conf_thr)
-                break
+        owning_asset_id: Optional[str] = None
+
+        # Determine owning asset via page_map first
+        mp = page_map.get(str(idx)) or page_map.get(idx)
+        if isinstance(mp, dict):
+            maybe_rel = mp.get("asset_rel_path")
+            maybe_id = mp.get("asset_id")
+            if maybe_id:
+                owning_asset_id = str(maybe_id)
+            elif maybe_rel and maybe_rel in assets:
+                owning_asset_id = assets[maybe_rel].id
+
+        # If not found, infer from detections JSON
+        if owning_asset_id is None:
+            for k, arr in detections_json.items():
+                if k.endswith(f"::page:{idx}"):
+                    det_count = sum(1 for d in (arr or []) if float(d.get("score", 0.0)) >= conf_thr)
+                    base_rel = k.split("::page:")[0]
+                    a = assets.get(base_rel)
+                    if a:
+                        owning_asset_id = a.id
+                    break
+        else:
+            # still compute detections if we have a key
+            for k, arr in detections_json.items():
+                if k.endswith(f"::page:{idx}"):
+                    det_count = sum(1 for d in (arr or []) if float(d.get("score", 0.0)) >= conf_thr)
+                    break
+
+        # As last resort, if there is exactly one PDF asset, use it
+        if owning_asset_id is None and len(pdf_assets) == 1:
+            owning_asset_id = pdf_assets[0].id
+
         fixed_img = fixed_pages_dir / f"{idx:04d}.png"
         if fixed_img.exists():
             status = "fixed"
@@ -854,6 +967,7 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
         base = f"/api/v1/jobs/{job_id}/pages/{idx}/preview"
         entry = PageEntry(
             index=idx,
+            asset_id=owning_asset_id,
             status=status,
             original_url=f"{base}?view=original",
             overlay_url=f"{base}?view=overlay",
@@ -884,31 +998,43 @@ def get_page_preview(
         - Pages are generated during analysis under jobs/{id}/pdf/pages/{index}.png
         - Overlays are saved under previews/overlay_{index}_p{index}.png
         - Fixed pages under jobs/{id}/pdf/fixed_pages/{index}.png
+
+    Behavior:
+        - If a required PNG is missing, return a PNG placeholder rather than a PDF or 404,
+          so the frontend <img> does not fail to render.
     """
     if state.get_job(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    if index < 0:
+        raise HTTPException(status_code=400, detail="Invalid page index")
+
+    log = logging.getLogger("api.page_preview")
     w = get_job_workspace(job_id)
     job_dir = w["job"]
     pages_dir = job_dir / "pdf" / "pages"
     fixed_pages_dir = job_dir / "pdf" / "fixed_pages"
-    
 
     page_img = pages_dir / f"{index:04d}.png"
     if not page_img.exists():
-        raise HTTPException(status_code=404, detail="Page not found")
+        log.warning("page_preview:missing_page job_id=%s index=%d path=%s", job_id, index, page_img)
+        return _png_placeholder(f"job {job_id} - page {index} not rasterized yet")
 
     if view == "original":
         path = page_img
     elif view == "overlay":
         overlay = w["previews"] / f"overlay_{page_img.stem}_p{index:04d}.png"
         path = overlay if overlay.exists() else page_img
+        if not overlay.exists():
+            log.info("page_preview:overlay_missing job_id=%s index=%d, using original", job_id, index)
     else:  # fixed
         fixed = fixed_pages_dir / f"{index:04d}.png"
         path = fixed if fixed.exists() else page_img
+        if not fixed.exists():
+            log.info("page_preview:fixed_missing job_id=%s index=%d, using original", job_id, index)
 
     guessed, _ = mimetypes.guess_type(str(path))
-    media_type = guessed or "application/octet-stream"
+    media_type = guessed or "image/png"
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 

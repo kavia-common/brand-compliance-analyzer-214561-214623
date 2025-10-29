@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 import mimetypes
 import logging
 import os
+import json
 from pydantic import BaseModel, Field, StrictStr
 
 from src.api.errors import error_response
@@ -138,6 +139,17 @@ class FixAssetRequest(BaseModel):
 class BatchFixRequest(BaseModel):
     """Request to run batch fixes."""
     strategy: Optional[str] = Field(None, description="Batch fix strategy (stubbed)")
+
+
+# PUBLIC_INTERFACE
+class PageEntry(BaseModel):
+    """Represents one PDF page preview entry."""
+    index: int = Field(..., description="0-based page index")
+    status: str = Field(..., description="Page status: detected|fixed|skipped|pending")
+    original_url: str = Field(..., description="Preview URL for original rasterized page")
+    overlay_url: str = Field(..., description="Preview URL with detection overlay if available")
+    fixed_url: str = Field(..., description="Preview URL after applying fix if available")
+    detections: int = Field(..., description="Number of detections found on this page above threshold")
 
 
 # Routes
@@ -754,20 +766,179 @@ def batch_fix(job_id: str, req: BatchFixRequest, request: Request, state: StateS
 
 
 # PUBLIC_INTERFACE
+@router.post(
+    "/jobs/{job_id}/apply-fix",
+    summary="Apply Fix (job-level)",
+    description="Apply fixes across all detected pages and assets; builds final PDFs for documents.",
+    tags=["jobs", "assets"],
+)
+def apply_fix(job_id: str, request: Request, state: StateStore = Depends(get_state_store)):
+    """Run job-level apply fix and return final PDF URL if present.
+
+    Returns:
+        JSON with list of outputs and optional final_pdf_url (if a PDF asset was fixed).
+    """
+    fixer = FixerService(state)
+    outputs = fixer.fix_all(job_id)
+    w = get_job_workspace(job_id)
+    final_pdf = (w["job"] / "pdf" / "final" / "fixed.pdf")
+    final_pdf_url = None
+    if final_pdf.exists():
+        # expose via direct file response route; also include a public mount URL
+        final_pdf_url = f"/api/v1/jobs/{job_id}/pages/download"  # simple helper; not strictly required for acceptance
+    return {
+        "message": "Apply fix complete",
+        "outputs": [str(p) for p in outputs],
+        "final_pdf_url": final_pdf_url,
+    }
+
+
+# PUBLIC_INTERFACE
+@router.get(
+    "/jobs/{job_id}/pages",
+    summary="List PDF Pages",
+    description="List per-page previews and detection statuses for document pages.",
+    tags=["assets", "jobs"],
+)
+def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_state_store)) -> dict:
+    """Return per-page entries with preview URLs and statuses.
+
+    Status logic:
+      - fixed if a fixed page raster exists
+      - detected if detections.json has >=1 detection with score >= 0.75
+      - skipped if no detections above threshold
+      - pending if pages exist but analysis has not produced overlays/detections
+    """
+    if state.get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    w = get_job_workspace(job_id)
+    job_dir = w["job"]
+    pdf_root = job_dir / "pdf"
+    pages_dir = pdf_root / "pages"
+    fixed_pages_dir = pdf_root / "fixed_pages"
+
+    if not pages_dir.exists():
+        return {"job_id": job_id, "total": 0, "pages": []}
+
+    # load detections if available
+    det_map_path = job_dir / "work" / "detections.json"
+    detections_json: dict[str, list[dict]] = {}
+    if det_map_path.exists():
+        try:
+            detections_json = json.loads(det_map_path.read_text(encoding="utf-8"))
+        except Exception:
+            detections_json = {}
+    conf_thr = float(os.getenv("DETECTION_CONFIDENCE_THRESHOLD", "0.75"))
+
+    entries: List[PageEntry] = []
+    # sorted by index from filenames {index:04d}.png
+    page_paths = sorted([p for p in pages_dir.glob("*.png") if p.is_file()])
+    for p in page_paths:
+        idx = int(p.stem)
+        # Determine detection count by suffix matching "::page:<idx>"
+        det_count = 0
+        for k, arr in detections_json.items():
+            if k.endswith(f"::page:{idx}"):
+                det_count = sum(1 for d in (arr or []) if float(d.get("score", 0.0)) >= conf_thr)
+                break
+        fixed_img = fixed_pages_dir / f"{idx:04d}.png"
+        if fixed_img.exists():
+            status = "fixed"
+        else:
+            status = "detected" if det_count > 0 else "skipped"
+        # If no overlays or detections at all and pages exist, keep "pending"
+        overlay = w["previews"] / f"overlay_{p.stem}_p{idx:04d}.png"
+        if not overlay.exists() and det_count == 0:
+            status = "pending"
+
+        base = f"/api/v1/jobs/{job_id}/pages/{idx}/preview"
+        entry = PageEntry(
+            index=idx,
+            status=status,
+            original_url=f"{base}?view=original",
+            overlay_url=f"{base}?view=overlay",
+            fixed_url=f"{base}?view=fixed",
+            detections=det_count,
+        )
+        entries.append(entry)
+
+    return {"job_id": job_id, "total": len(entries), "pages": [e.model_dump(mode='json') for e in entries]}
+
+
+# PUBLIC_INTERFACE
+@router.get(
+    "/jobs/{job_id}/pages/{index}/preview",
+    summary="Get Page Preview",
+    description="Preview for a specific page index with view=original|overlay|fixed.",
+    tags=["assets"],
+)
+def get_page_preview(
+    job_id: str,
+    index: int,
+    view: Literal["original", "overlay", "fixed"] = Query("original", description="Preview type"),
+    state: StateStore = Depends(get_state_store),
+):
+    """Serve a page-level preview file based on requested view.
+
+    Notes:
+        - Pages are generated during analysis under jobs/{id}/pdf/pages/{index}.png
+        - Overlays are saved under previews/overlay_{index}_p{index}.png
+        - Fixed pages under jobs/{id}/pdf/fixed_pages/{index}.png
+    """
+    if state.get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    w = get_job_workspace(job_id)
+    job_dir = w["job"]
+    pages_dir = job_dir / "pdf" / "pages"
+    fixed_pages_dir = job_dir / "pdf" / "fixed_pages"
+    
+
+    page_img = pages_dir / f"{index:04d}.png"
+    if not page_img.exists():
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    if view == "original":
+        path = page_img
+    elif view == "overlay":
+        overlay = w["previews"] / f"overlay_{page_img.stem}_p{index:04d}.png"
+        path = overlay if overlay.exists() else page_img
+    else:  # fixed
+        fixed = fixed_pages_dir / f"{index:04d}.png"
+        path = fixed if fixed.exists() else page_img
+
+    guessed, _ = mimetypes.guess_type(str(path))
+    media_type = guessed or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+# PUBLIC_INTERFACE
 @router.get(
     "/jobs/{job_id}/download",
     summary="Download Artifacts",
-    description="Download outputs/report for a job. Query param type=zip|report|both.",
+    description="Download outputs/report for a job. Query param type=zip|report|both|pdf.",
     tags=["report"],
 )
 def download_artifacts(
     job_id: str,
-    type: Literal["zip", "report", "both"] = Query("zip", description="Artifact type to download"),
+    type: Literal["zip", "report", "both", "pdf"] = Query("zip", description="Artifact type to download"),
     state: StateStore = Depends(get_state_store),
 ):
-    """Create and return the requested artifact."""
+    """Create and return the requested artifact.
+
+    pdf type:
+        Returns the final assembled fixed.pdf if available (after apply-fix); 404 if not present.
+    """
     if state.get_job(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    if type == "pdf":
+        w = get_job_workspace(job_id)
+        fixed_pdf = w["job"] / "pdf" / "final" / "fixed.pdf"
+        if not fixed_pdf.exists():
+            raise HTTPException(status_code=404, detail="Final PDF not available")
+        return FileResponse(fixed_pdf, media_type="application/pdf", filename=fixed_pdf.name)
+
     report = ReportService(state)
     try:
         target = report.prepare_downloads(job_id, type)

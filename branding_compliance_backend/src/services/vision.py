@@ -7,7 +7,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 
-from PIL import Image, ImageFilter
+from PIL import Image
 import numpy as np
 
 # Optional import handling for OpenCV; we guard usages where necessary.
@@ -333,6 +333,24 @@ class VisionUtils:
             # default fall-back
             image.save(dst)
 
+    @staticmethod
+    def _build_padded_patch(logo_rgba: Image.Image, target_w: int, target_h: int) -> Image.Image:
+        """Create a white RGBA patch of (target_w,target_h) and center the logo preserving aspect ratio."""
+        target_w = max(1, int(round(target_w)))
+        target_h = max(1, int(round(target_h)))
+        patch = Image.new("RGBA", (target_w, target_h), (255, 255, 255, 255))
+        lw, lh = logo_rgba.size
+        # compute scale to fit inside target while preserving aspect ratio
+        scale = min(target_w / lw, target_h / lh) if lw > 0 and lh > 0 else 1.0
+        new_w = max(1, int(round(lw * scale)))
+        new_h = max(1, int(round(lh * scale)))
+        resized = logo_rgba.resize((new_w, new_h), Image.LANCZOS)
+        # center the resized logo
+        left = (target_w - new_w) // 2
+        top = (target_h - new_h) // 2
+        patch.alpha_composite(resized, dest=(left, top))
+        return patch
+
     # PUBLIC_INTERFACE
     @staticmethod
     def replace_logo(
@@ -343,60 +361,86 @@ class VisionUtils:
         feather: int = 6,
         quality_mode: str = "balanced",
     ) -> Path:
-        """Apply new logo on top of detected regions, with affine/perspective transformations and soft edges."""
-        if not detections:
+        """Apply new logo on top of detected regions with aspect-ratio preservation and white padding.
+
+        Behavior:
+          - Detections below ~0.75 confidence are skipped.
+          - For axis-aligned boxes: create a white patch the size of bbox, center the logo keeping aspect ratio.
+          - For rotated/perspective detections: build a white patch for the bounding rect then warp it to the quad.
+          - White padding fills any empty space to completely cover the detected bbox.
+        """
+        # Filter by confidence threshold ~0.75
+        conf_thr = float(os.getenv("DETECTION_CONFIDENCE_THRESHOLD", "0.75"))
+        good_dets = [d for d in (detections or []) if (d.score is None or d.score >= conf_thr)]
+        if not good_dets:
             # If nothing to replace, copy or save original
-            # We use Pillow to load and re-save to keep consistent pipeline.
             base = VisionUtils._pil_read(image_path)
             VisionUtils._pil_save_keep_format(base, out_path, quality_mode)
             return out_path
 
         base_im = VisionUtils._pil_read(image_path)  # RGBA
-        overlay_logo = VisionUtils._pil_read(new_logo_png_path)  # assumed RGBA with transparency
+        overlay_logo = VisionUtils._pil_read(new_logo_png_path)  # RGBA
 
         # Working in numpy for geometric warp; convert to OpenCV space when needed
         base_bgra = cv2.cvtColor(np.array(base_im), cv2.COLOR_RGBA2BGRA) if cv2 is not None else np.array(base_im)
 
-        for det in detections:
+        for det in good_dets:
             try:
-                # Determine destination quadrilateral
+                # If we have 4-point quad and cv2, use perspective warp of a prepared white patch
                 if det.points and len(det.points) == 4 and cv2 is not None:
                     dst_pts = np.float32(det.points)
-                else:
-                    # Use axis-aligned box
-                    x1, y1 = det.x, det.y
-                    x2, y2 = det.x + det.width, det.y + det.height
-                    dst_pts = np.float32([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+                    # bounding rect dimensions for patch
+                    xs = dst_pts[:, 0]
+                    ys = dst_pts[:, 1]
+                    x_min, y_min = float(xs.min()), float(ys.min())
+                    x_max, y_max = float(xs.max()), float(ys.max())
+                    rect_w = max(1, int(round(x_max - x_min)))
+                    rect_h = max(1, int(round(y_max - y_min)))
+                    # Build padded patch with white background
+                    patch = VisionUtils._build_padded_patch(overlay_logo, rect_w, rect_h)
+                    patch_bgra = cv2.cvtColor(np.array(patch), cv2.COLOR_RGBA2BGRA)
 
-                # Source quad: full logo image
-                h, w = overlay_logo.size[1], overlay_logo.size[0]
-                src_pts = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
-
-                if cv2 is not None:
+                    src_pts = np.float32([[0, 0], [rect_w, 0], [rect_w, rect_h], [0, rect_h]])
                     M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-                    logo_bgra = cv2.cvtColor(np.array(overlay_logo), cv2.COLOR_RGBA2BGRA)
-                    warped = cv2.warpPerspective(logo_bgra, M, (base_bgra.shape[1], base_bgra.shape[0]))
-                    # Feathered alpha blending
+                    warped = cv2.warpPerspective(patch_bgra, M, (base_bgra.shape[1], base_bgra.shape[0]))
+                    # Alpha blend with optional feather
                     alpha = warped[:, :, 3] / 255.0
-                    if feather > 0:
-                        alpha = cv2.GaussianBlur(alpha, (feather | 1, feather | 1), 0)
+                    if feather and feather > 0:
+                        k = feather | 1
+                        alpha = cv2.GaussianBlur(alpha, (k, k), 0)
                     for c in range(3):
                         base_bgra[:, :, c] = (1.0 - alpha) * base_bgra[:, :, c] + alpha * warped[:, :, c]
-                    # update alpha to fully opaque in result
                     base_bgra[:, :, 3] = 255
                 else:
-                    # Pillow-only fallback: approximate using resize + paste
-                    x1, y1 = int(dst_pts[:, 0].min()), int(dst_pts[:, 1].min())
-                    x2, y2 = int(dst_pts[:, 0].max()), int(dst_pts[:, 1].max())
-                    if x2 - x1 <= 0 or y2 - y1 <= 0:
+                    # Axis-aligned bbox path (works without cv2 as well)
+                    x1 = int(max(0, round(det.x)))
+                    y1 = int(max(0, round(det.y)))
+                    bw = int(round(det.width))
+                    bh = int(round(det.height))
+                    if bw <= 0 or bh <= 0:
                         continue
-                    resized = overlay_logo.resize((x2 - x1, y2 - y1), Image.LANCZOS)
-                    if feather > 0:
-                        # soften the edges of the alpha channel
-                        r, g, b, a = resized.split()
-                        a = a.filter(ImageFilter.GaussianBlur(radius=max(1, feather // 2)))
-                        resized = Image.merge("RGBA", (r, g, b, a))
-                    base_im.alpha_composite(resized, dest=(x1, y1))
+                    # Patch with white padding and aspect preservation
+                    patch = VisionUtils._build_padded_patch(overlay_logo, bw, bh)
+                    if cv2 is not None:
+                        patch_bgra = cv2.cvtColor(np.array(patch), cv2.COLOR_RGBA2BGRA)
+                        x2 = min(base_bgra.shape[1], x1 + bw)
+                        y2 = min(base_bgra.shape[0], y1 + bh)
+                        # Adjust patch to clipped region if bbox extends outside image
+                        pw = x2 - x1
+                        ph = y2 - y1
+                        if pw <= 0 or ph <= 0:
+                            continue
+                        patch_roi = patch_bgra[0:ph, 0:pw, :]
+                        alpha = patch_roi[:, :, 3] / 255.0
+                        if feather and feather > 0:
+                            k = feather | 1
+                            alpha = cv2.GaussianBlur(alpha, (k, k), 0)
+                        for c in range(3):
+                            base_bgra[y1:y2, x1:x2, c] = (1.0 - alpha) * base_bgra[y1:y2, x1:x2, c] + alpha * patch_roi[:, :, c]
+                        base_bgra[y1:y2, x1:x2, 3] = 255
+                    else:
+                        # Pillow fallback
+                        base_im.alpha_composite(patch, dest=(x1, y1))
             except Exception as e:
                 logging.getLogger("vision.replace").warning("Failed to apply replacement: %s", e)
 

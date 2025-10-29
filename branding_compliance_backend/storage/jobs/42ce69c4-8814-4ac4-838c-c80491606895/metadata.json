@@ -1,0 +1,88 @@
+{
+  "job_id": "42ce69c4-8814-4ac4-838c-c80491606895",
+  "status": "completed",
+  "progress": 1.0,
+  "message": "Completed",
+  "input_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/42ce69c4-8814-4ac4-838c-c80491606895/input/pdfs/RFP_Section_I_Instructions to Offerors.pdf",
+  "output_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/42ce69c4-8814-4ac4-838c-c80491606895/output/replaced/RFP_Section_I_Instructions to Offerors_replaced.pdf",
+  "outputs": [
+    {
+      "type": "pdf",
+      "path": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/42ce69c4-8814-4ac4-838c-c80491606895/output/replaced/RFP_Section_I_Instructions to Offerors_replaced.pdf",
+      "label": "replaced"
+    }
+  ],
+  "params": {
+    "dpi": 250,
+    "max_pages": null,
+    "match_threshold": 1.0
+  },
+  "findings": {
+    "total_pages": 15,
+    "pages": [
+      {
+        "page_index": 0,
+        "detections": []
+      },
+      {
+        "page_index": 1,
+        "detections": []
+      },
+      {
+        "page_index": 2,
+        "detections": []
+      },
+      {
+        "page_index": 3,
+        "detections": []
+      },
+      {
+        "page_index": 4,
+        "detections": []
+      },
+      {
+        "page_index": 5,
+        "detections": []
+      },
+      {
+        "page_index": 6,
+        "detections": []
+      },
+      {
+        "page_index": 7,
+        "detections": []
+      },
+      {
+        "page_index": 8,
+        "detections": []
+      },
+      {
+        "page_index": 9,
+        "detections": []
+      },
+      {
+        "page_index": 10,
+        "detections": []
+      },
+      {
+        "page_index": 11,
+        "detections": []
+      },
+      {
+        "page_index": 12,
+        "detections": []
+      },
+      {
+        "page_index": 13,
+        "detections": []
+      },
+      {
+        "page_index": 14,
+        "detections": []
+      }
+    ]
+  },
+  "timestamps": {
+    "completed": 1761731344.4806902
+  }
+}

@@ -111,8 +111,10 @@ class VisionUtils:
 
         Returns list of Detection entries with bounding boxes, method, score, and optional corner points.
         """
-        VisionUtils._ensure_cv2()
         cfg = config or DetectorConfig()
+        if cv2 is None:
+            # Graceful degradation when OpenCV is not installed: no detections
+            return []
 
         img = VisionUtils._imread(image_path)
         templ = VisionUtils._imread(template_path)

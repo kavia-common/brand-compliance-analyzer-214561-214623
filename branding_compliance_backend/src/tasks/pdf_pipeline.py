@@ -5,7 +5,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 import cv2
@@ -21,7 +21,6 @@ from src.services.image_utils import (
     Detection,
     feature_match_fallback,
 )
-from src.services.detect_config import default_detection_config, DetectionConfig
 from src.services.json_utils import to_native_jsonable
 from src.storage.paths import (
     ensure_job_dirs,
@@ -150,18 +149,6 @@ def _save_page_preview_images(job_id: str, page_idx: int, page_img: Image.Image,
         f.write(rep_bytes)
 
 
-def _compute_simple_metrics(detections_count: int, prev_detections_count: Optional[int]) -> Dict[str, Any]:
-    """Compute approximate recall/precision deltas using counts only (no GT available)."""
-    # Without ground truth, we report before/after counts as a proxy.
-    if prev_detections_count is None:
-        return {"before": None, "after": detections_count, "delta": None}
-    return {
-        "before": prev_detections_count,
-        "after": detections_count,
-        "delta": detections_count - prev_detections_count,
-    }
-
-
 def _write_output_pdf(job_id: str, pdf_in_path: str, detections_by_page: Dict[int, List[Detection]], new_logo_img: Image.Image, dpi: int) -> str:
     """Open original PDF, overlay logos on matching boxes, and write replaced PDF."""
     out_dir = output_replaced_dir(job_id)
@@ -214,57 +201,29 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
         if not templates_bgr:
             raise RuntimeError("No valid old_logo templates could be loaded.")
 
-        # Setup detection configuration (tunable)
-        cfg: DetectionConfig = default_detection_config()
-
         findings_pages: List[PageFindings] = []
         detections_by_page: Dict[int, List[Detection]] = {}
 
         # Process each page
         per_page_counts: List[int] = []
         all_detections_dump: Dict[int, List[Dict[str, float]]] = {}
-        page_diagnostics: Dict[int, Dict[str, Any]] = {}
         for idx, page_img in enumerate(raster_pages):
             _update_status(job_id, message=f"Detecting logos on page {idx + 1}/{total_pages}")
             page_bgr = pil_to_cv(page_img)
 
-            diag: Dict[str, Any] = {}
-            # Primary: multi-scale template matching with rotation search and scale prior
+            # Primary: multi-scale template matching
             dets = multi_scale_template_match(
                 page_bgr,
                 templates_bgr,
-                match_threshold=float(params.match_threshold or cfg.match_threshold),
-                scales=cfg.scales,
-                method=cv2.TM_CCOEFF_NORMED,
-                cfg=cfg,
-                page_diag=diag,
+                match_threshold=float(params.match_threshold or 0.75),
             )
 
             # Fallback if zero detections: feature matching with small rotations
             if len(dets) == 0:
-                fm_dets = feature_match_fallback(
-                    page_bgr,
-                    templates_bgr,
-                    rotations_deg=cfg.feature_rotations,
-                    min_inliers=cfg.feature_min_inliers,
-                    ransac_reproj_thresh=cfg.feature_ransac_reproj_thresh,
-                    cfg=cfg,
-                    page_diag=diag,
-                )
+                fm_dets = feature_match_fallback(page_bgr, templates_bgr)
+                # Use feature matches if any
                 if fm_dets:
                     dets = fm_dets
-                else:
-                    # Add failure reasons if clearly problematic (heuristics)
-                    if "reasons" not in diag:
-                        diag["reasons"] = []
-                    # Low-contrast heuristic: compute contrast
-                    g = cv2.cvtColor(page_bgr, cv2.COLOR_BGR2GRAY)
-                    if float(g.std()) < 18.0:
-                        diag["reasons"].append("low_contrast_page")
-                    # Rotation heuristic (no matches but strong edges): suggest increasing rotation
-                    edges = cv2.Canny(g, 50, 150)
-                    if edges.mean() > 20:
-                        diag["reasons"].append("possible_rotation>15deg")
 
             detections_by_page[idx] = dets
             per_page_counts.append(len(dets))
@@ -281,8 +240,6 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
                     {"x": d.x, "y": d.y, "w": d.w, "h": d.h, "score": float(d.score), "template_id": d.template_id}
                 )
             findings_pages.append(PageFindings(page_index=idx, detections=page_boxes))
-            if cfg.collect_page_diagnostics:
-                page_diagnostics[idx] = diag
 
             # Update progress
             _update_status(job_id, progress=(idx + 1) / max(1, total_pages))
@@ -291,23 +248,7 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
         _update_status(job_id, message="Writing replaced PDF")
         out_pdf = _write_output_pdf(job_id, pdf_path, detections_by_page, new_logo_img, dpi=max(200, params.dpi))
 
-        # Try to compute an approximate before/after improvement if prior metadata exists for same input path
-        prev_total = None
-        try:
-            # scan sibling job directories for same input file path to compare counts (best-effort)
-            jobs_root = os.path.join(os.getcwd(), "storage", "jobs")
-            if os.path.isdir(jobs_root):
-                for d in os.listdir(jobs_root):
-                    md = load_metadata_safely(d)
-                    if not md or d == job_id:
-                        continue
-                    if md.get("input_pdf") == pdf_path and isinstance(md.get("findings"), dict):
-                        prev_total = int(md["findings"].get("total_detections"))  # type: ignore
-        except Exception:
-            prev_total = None
-
         # Save metadata
-        total_now = int(sum(per_page_counts))
         meta = {
             "job_id": job_id,
             "status": "completed",
@@ -319,15 +260,12 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
                 {"type": "pdf", "path": out_pdf, "label": "replaced"}
             ],
             "params": params.model_dump(),
-            "detection_config": default_detection_config().to_dict(),  # persisted for transparency
             "findings": {
                 "total_pages": total_pages,
                 "pages": [fp.model_dump() for fp in findings_pages],
                 "per_page_detection_counts": per_page_counts,
-                "total_detections": total_now,
+                "total_detections": int(sum(per_page_counts)),
                 "detections_dump": all_detections_dump,  # per-page detailed detections
-                "page_diagnostics": page_diagnostics,    # per-page failure reasons and search settings
-                "approx_improvement": _compute_simple_metrics(total_now, prev_total),
             },
             "debug": {
                 "templates": loaded_templates_info,
@@ -338,13 +276,6 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
         # Normalize to native types prior to saving
         meta = to_native_jsonable(meta)
         save_metadata(job_id, meta)
-
-        # Persist a small before/after report in job root for convenience
-        try:
-            from src.services.report_utils import persist_job_report
-            persist_job_report(job_id)
-        except Exception:
-            pass
 
         # Update in-memory status
         _update_status(

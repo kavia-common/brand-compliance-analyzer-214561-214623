@@ -12,15 +12,6 @@ Developer notes
 - Minimal logging:
   - json_utils emits an INFO log "Applied JSON normalization." when normalization occurs. Integrators may configure logging at the app level to manage handlers/levels.
 
-Detection configuration and diagnostics
-
-- Tunable detection parameters are centralized in src/services/detect_config.DetectionConfig with sane defaults:
-  - Small-angle rotation search (−15..+15°), scale prior from page/template sizes, CLAHE tuning, optional white top-hat for background suppression, and size-aware NMS.
-  - Color-invariant matching (grayscale + TM_CCOEFF_NORMED) with ORB/AKAZE fallback (RANSAC).
-- Per-page diagnostics and failure reasons are stored in metadata under findings.page_diagnostics[page]:
-  - Includes used scales, rotation list, scale_prior, and reasons such as low_contrast_page, no_template_match_above_threshold, possible_rotation>15deg.
-- A small before/after report is written to report_summary.json in the job root comparing total detections with previous jobs for the same input PDF (best-effort proxy for recall).
-
 Testing
 
 - Run pytest within the backend container to validate JSON normalization:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import List
+from typing import List, Dict
 
 from src.models.asset import AssetStatus
 from src.models.issue import Issue, IssueStatus
@@ -55,12 +55,30 @@ class FixerService:
         files = [p for p in new_dir.iterdir() if p.is_file()]
         return files[0] if files else None
 
+    def _load_page_map(self, job_dir: Path) -> Dict[int, Dict]:
+        pm_path = job_dir / "pdf" / "page_map.json"
+        if not pm_path.exists():
+            return {}
+        try:
+            data = json.loads(pm_path.read_text(encoding="utf-8")) or {}
+            # ensure keys as int
+            out: Dict[int, Dict] = {}
+            for k, v in data.items():
+                try:
+                    out[int(k)] = v
+                except Exception:
+                    continue
+            return out
+        except Exception:
+            return {}
+
     def fix_asset(self, job_id: str, asset_id: str) -> Path:
         """Fix a single asset and place result in outputs/ using detections + new logo.
 
         For PDFs:
-          - Rasterize pages (if not already), apply replacements per page,
-            and reassemble a fixed.pdf under outputs/.
+          - Rasterize pages (per-asset src dir), apply replacements per page using detections keyed by local index,
+            write fixed page images to pdf/fixed_pages/{global_index}.png for previews, and
+            reassemble a fixed.pdf under outputs/.
         """
         w = get_job_workspace(job_id)
         job = self.state.get_job(job_id)
@@ -85,33 +103,49 @@ class FixerService:
             log = logging.getLogger("fixer.pdf")
             # Directories for pdf workflow
             pdf_root = w["job"] / "pdf"
-            pages_dir = pdf_root / "pages"
+            src_pages_dir = pdf_root / "src_pages" / asset.id  # do not collide with global pages
+            src_pages_dir.mkdir(parents=True, exist_ok=True)
+            pages_dir = pdf_root / "pages"  # global pages (already created by analyzer)
             fixed_pages_dir = pdf_root / "fixed_pages"
             final_dir = pdf_root / "final"
             fixed_pages_dir.mkdir(parents=True, exist_ok=True)
             final_dir.mkdir(parents=True, exist_ok=True)
 
-            # Rasterize original pages
-            pages, page_sizes = rasterize_pdf(src, pages_dir, dpi=300)
+            # Rasterize original pages to local src dir to get sizes/local indices
+            pages, page_sizes = rasterize_pdf(src, src_pages_dir, dpi=300)
             log.info("fix:pdf_rasterized asset=%s pages=%d", asset.id, len(pages))
 
-            # Apply replacements per page using detections keyed as "<rel_path>::page:<idx>"
+            # Load page_map to map local -> global index for this asset
+            page_map = self._load_page_map(w["job"])
+            local_to_global: Dict[int, int] = {}
+            for gidx, info in page_map.items():
+                try:
+                    if str(info.get("asset_id")) == str(asset_id):
+                        li = int(info.get("local_index"))
+                        local_to_global[li] = int(gidx)
+                except Exception:
+                    continue
+
+            # Apply replacements per page using detections keyed as "<rel_path>::page:<local_idx>"
             page_image_paths: List[Path] = []
             for page in pages:
                 key = f"{asset.rel_path}::page:{page.index}"
                 dets = self._load_detections_for_asset(job_id, key)
                 src_img = page.image_path
-                out_img = fixed_pages_dir / f"{page.index:04d}.png"
+                gidx = local_to_global.get(int(page.index), int(page.index))
+                out_img = fixed_pages_dir / f"{gidx:04d}.png"
+
                 if dets and new_logo and new_logo.exists():
-                    log.info("fix:apply_page asset=%s page=%d dets=%d", asset.id, page.index, len(dets))
+                    log.info("fix:apply_page asset=%s local_page=%d global_page=%d dets=%d", asset.id, page.index, gidx, len(dets))
                     VisionUtils.replace_logo(src_img, new_logo, dets, out_img, feather=6, quality_mode=cfg.quality)
                 else:
-                    log.info("fix:copy_page asset=%s page=%d dets=0", asset.id, page.index)
-                    # copy the page image through to maintain pipeline
+                    log.info("fix:copy_page asset=%s local_page=%d global_page=%d dets=0", asset.id, page.index, gidx)
                     try:
                         shutil.copy2(src_img, out_img)
                     except Exception:
                         out_img = src_img
+
+                # The assembler just needs images in local order; filenames can be global; idx in enumerate supplies local indices.
                 page_image_paths.append(out_img if out_img.exists() else src_img)
 
             # Reassemble into a fixed PDF

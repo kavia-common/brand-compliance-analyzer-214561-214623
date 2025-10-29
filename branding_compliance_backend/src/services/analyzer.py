@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict
@@ -86,10 +87,19 @@ class AnalyzerService:
         VisionUtils.save_detections_json(det_map, out)
         return out
 
-    def _overlay_preview(self, job_id: str, asset_path: Path, detections: List[Detection], page_index: int | None = None) -> None:
+    def _overlay_preview(
+        self,
+        job_id: str,
+        asset_path: Path,
+        detections: List[Detection],
+        page_index: int | None = None,
+        out_stem: str | None = None,
+    ) -> None:
         """Create a simple overlay PNG drawing rectangles on detections.
 
         If page_index is provided, include it in the overlay filename to disambiguate per-page overlays.
+        out_stem optionally overrides the base stem used in the overlay filename; this allows generating
+        overlays for job-level page indices even if the source image resides elsewhere.
         """
         try:
             from PIL import Image, ImageDraw
@@ -111,7 +121,7 @@ class AnalyzerService:
                 w = get_job_workspace(job_id)
                 previews: Path = w["previews"]
                 previews.mkdir(parents=True, exist_ok=True)
-                stem = Path(asset_path.name).stem
+                stem = out_stem if out_stem else Path(asset_path.name).stem
                 suffix = f"_p{page_index:04d}" if page_index is not None else ""
                 name = f"overlay_{stem}{suffix}.png"
                 out.save(previews / name, format="PNG")
@@ -165,14 +175,17 @@ class AnalyzerService:
                         )
 
                 elif a.type == AssetType.pdf and fpath.exists():
-                    # Rasterize PDF pages to images and optionally run detection per page
+                    # Rasterize PDF pages under a per-asset src directory, then copy to a global pages dir with unique global indices.
                     pdf_root = w["job"] / "pdf"
-                    pdf_pages_dir = pdf_root / "pages"
-                    pdf_overlays_dir = pdf_root / "overlays"
-                    pdf_pages_dir.mkdir(parents=True, exist_ok=True)
-                    pdf_overlays_dir.mkdir(parents=True, exist_ok=True)
-                    pages, _sizes = rasterize_pdf(fpath, pdf_pages_dir, dpi=300)
-                    log.info("analyze:pdf_rasterized rel_path=%s page_count=%d out_dir=%s", a.rel_path, len(pages), pdf_pages_dir)
+                    pages_global_dir = pdf_root / "pages"
+                    pages_global_dir.mkdir(parents=True, exist_ok=True)
+                    src_pages_dir = pdf_root / "src_pages" / a.id
+                    src_pages_dir.mkdir(parents=True, exist_ok=True)
+                    overlays_dir = pdf_root / "overlays"
+                    overlays_dir.mkdir(parents=True, exist_ok=True)
+
+                    pages, _sizes = rasterize_pdf(fpath, src_pages_dir, dpi=300)
+                    log.info("analyze:pdf_rasterized rel_path=%s page_count=%d src_dir=%s", a.rel_path, len(pages), src_pages_dir)
                     if not pages:
                         log.warning("analyze:pdf_no_pages rel_path=%s", a.rel_path)
 
@@ -187,33 +200,49 @@ class AnalyzerService:
                     except Exception as e:
                         log.warning("analyze:page_count_save_failed asset_id=%s err=%s", a.id, e)
 
-                    # Maintain a simple map of page index -> asset info to assist API with ownership
+                    # Load or initialize page_map dict
+                    page_map_path = pdf_root / "page_map.json"
                     try:
-                        page_map_path = pdf_root / "page_map.json"
-                        page_map: dict[str, dict] = {}
-                        if page_map_path.exists():
-                            try:
-                                page_map = json.loads(page_map_path.read_text(encoding="utf-8")) or {}
-                            except Exception:
-                                page_map = {}
-                        for page in pages:
-                            page_map[str(page.index)] = {"asset_id": a.id, "asset_rel_path": a.rel_path}
-                        page_map_path.parent.mkdir(parents=True, exist_ok=True)
-                        page_map_path.write_text(json.dumps(page_map, indent=2), encoding="utf-8")
+                        page_map: dict = json.loads(page_map_path.read_text(encoding="utf-8")) if page_map_path.exists() else {}
+                        if not isinstance(page_map, dict):
+                            page_map = {}
                     except Exception:
-                        # non-fatal
-                        pass
+                        page_map = {}
+                    # Compute next global index
+                    try:
+                        keys = [int(str(k)) for k in page_map.keys() if str(k).isdigit()]
+                        next_global = max(keys) + 1 if keys else 0
+                    except Exception:
+                        next_global = 0
 
+                    # Process each local page, detect, copy to global, overlay with global naming, and record page_map
                     for page in pages:
-                        dets = []
+                        global_idx = next_global
+                        next_global += 1
+
+                        # Copy local page image to global pages directory with global index filename
+                        global_img_path = pages_global_dir / f"{global_idx:04d}.png"
+                        try:
+                            shutil.copy2(page.image_path, global_img_path)
+                        except Exception:
+                            # fallback to rename if copy fails
+                            try:
+                                page.image_path.replace(global_img_path)
+                            except Exception:
+                                global_img_path = page.image_path  # last resort
+
+                        dets: List[Detection] = []
                         if old_logo_template:
+                            # Run detection on the source (identical size to global copy)
                             dets = VisionUtils.detect_old_logo(page.image_path, old_logo_template, cfg)
-                            # detections map key per-page for downstream fixer
+                            # Key detections by local page index so fixer can map via page_map later
                             key = f"{a.rel_path}::page:{page.index}"
                             detections_map[key] = dets
-                            log.info("analyze:pdf_page_detections rel_path=%s page=%d count=%d", a.rel_path, page.index, len(dets))
-                            # Save per-page overlay to previews with page index in filename
-                            self._overlay_preview(job_id, page.image_path, dets, page_index=page.index)
+                            log.info("analyze:pdf_page_detections asset=%s local_page=%d global_page=%d count=%d",
+                                     a.id, page.index, global_idx, len(dets))
+                            # Save overlay using the global index naming, composited on the global image path
+                            self._overlay_preview(job_id, global_img_path, dets, page_index=global_idx, out_stem=f"{global_idx:04d}")
+                            # Create issues with local page info
                             for d in dets:
                                 iid = str(uuid.uuid4())
                                 bbox = BoundingBox(x=d.x, y=d.y, width=d.width, height=d.height, normalized=False)
@@ -232,6 +261,22 @@ class AnalyzerService:
                                         meta={"method": d.method, "points": d.points or [], "page_index": page.index},
                                     )
                                 )
+
+                        # Record page_map for global -> asset/local mapping
+                        page_map[str(global_idx)] = {
+                            "asset_id": a.id,
+                            "asset_rel_path": a.rel_path,
+                            "local_index": int(page.index),
+                        }
+
+                    # Save page_map back
+                    try:
+                        page_map_path.parent.mkdir(parents=True, exist_ok=True)
+                        page_map_path.write_text(json.dumps(page_map, indent=2), encoding="utf-8")
+                    except Exception:
+                        # non-fatal
+                        pass
+
                 else:
                     # Keep heuristic to still demonstrate non-logo issues
                     h = None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, Request, BackgroundTasks
 
 # Reuse models and services from v1 to ensure identical behavior/serialization
 from src.api.v1 import (
@@ -130,17 +130,14 @@ async def compat_upload_new_brand(
     description="Compatibility alias for POST /api/v1/jobs/{job_id}/analyze.",
     tags=["jobs"],
 )
-def compat_analyze_job(job_id: str, request: Request, state: StateStore = Depends(get_state_store)):
+def compat_analyze_job(job_id: str, background: BackgroundTasks, request: Request, state: StateStore = Depends(get_state_store)):
     try:
-        # Forward request context so v1 can log origin/headers; BackgroundTasks is injected by FastAPI.
-        return v1_analyze_job(job_id, request=request, state=state)  # type: ignore[arg-type]
+        # Forward background and request context so v1 can schedule work and log origin/headers.
+        return v1_analyze_job(job_id, background=background, request=request, state=state)  # type: ignore[arg-type]
     except HTTPException as e:
         # If v1 provided dict detail (structured), pass through; else wrap
         detail = e.detail if isinstance(e.detail, dict) else _error_payload(e.status_code, str(e.detail))
         raise HTTPException(status_code=e.status_code, detail=detail)
-
-
-
 
 
 # PUBLIC_INTERFACE
@@ -183,10 +180,11 @@ def compat_get_asset_preview(
     job_id: str,
     asset_id: str,
     view: Literal["original", "overlay", "fixed"] = Query("original", description="Preview type"),
+    page: int | None = Query(default=None, description="0-based page index (PDF only)"),
     state: StateStore = Depends(get_state_store),
 ):
     try:
-        return v1_get_asset_preview(job_id, asset_id, view, state)
+        return v1_get_asset_preview(job_id, asset_id, view, page, state)
     except HTTPException as e:
         raise HTTPException(status_code=e.status_code, detail=_error_payload(e.status_code, str(e.detail)))
 
@@ -198,10 +196,10 @@ def compat_get_asset_preview(
     description="Compatibility alias for POST /api/v1/jobs/{job_id}/assets/{asset_id}/fix.",
     tags=["assets"],
 )
-def compat_fix_single_asset(job_id: str, asset_id: str, req: FixAssetRequest, state: StateStore = Depends(get_state_store)):
+def compat_fix_single_asset(job_id: str, asset_id: str, req: FixAssetRequest, request: Request, state: StateStore = Depends(get_state_store)):
     try:
         # v1 function will now include public_url in response; passthrough
-        return v1_fix_single_asset(job_id, asset_id, req, state)  # type: ignore[arg-type]
+        return v1_fix_single_asset(job_id, asset_id, req, request, state)  # type: ignore[arg-type]
     except HTTPException as e:
         raise HTTPException(status_code=e.status_code, detail=_error_payload(e.status_code, str(e.detail)))
 
@@ -213,10 +211,10 @@ def compat_fix_single_asset(job_id: str, asset_id: str, req: FixAssetRequest, st
     description="Compatibility alias for POST /api/v1/jobs/{job_id}/fix/batch.",
     tags=["assets"],
 )
-def compat_batch_fix(job_id: str, req: BatchFixRequest, state: StateStore = Depends(get_state_store)):
+def compat_batch_fix(job_id: str, req: BatchFixRequest, request: Request, state: StateStore = Depends(get_state_store)):
     try:
         # v1 now returns public_urls; passthrough unchanged
-        return v1_batch_fix(job_id, req, state)  # type: ignore[arg-type]
+        return v1_batch_fix(job_id, req, request, state)  # type: ignore[arg-type]
     except HTTPException as e:
         raise HTTPException(status_code=e.status_code, detail=_error_payload(e.status_code, str(e.detail)))
 

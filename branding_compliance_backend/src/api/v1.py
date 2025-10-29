@@ -730,7 +730,26 @@ def get_asset_preview(
         if page < 0:
             raise HTTPException(status_code=400, detail="Invalid page")
         if getattr(asset, "page_count", None) is not None and page >= int(asset.page_count):
-            raise HTTPException(status_code=404, detail="Page out of range")
+            # The provided page refers to local asset page index; do not 404 yet, let mapping adjust below
+            pass
+
+    # For PDFs, map an asset-local page index to a global page index using page_map if provided
+    if is_pdf and page is not None:
+        try:
+            job_dir = w["job"]
+            pdf_root = job_dir / "pdf"
+            page_map_path = pdf_root / "page_map.json"
+            if page_map_path.exists():
+                pm = json.loads(page_map_path.read_text(encoding="utf-8")) or {}
+                # Find global index mapped to this asset_id and local page index
+                for gidx_str, info in pm.items():
+                    if isinstance(info, dict) and str(info.get("asset_id")) == str(asset_id) and int(info.get("local_index", -1)) == int(page):
+                        # remap page to global index
+                        page = int(gidx_str)
+                        break
+        except Exception:
+            # best-effort; fallback to using provided page as global if mapping fails
+            pass
 
     if is_pdf:
         job_dir = w["job"]
@@ -753,7 +772,6 @@ def get_asset_preview(
                 path = job_dir / asset.rel_path
             else:
                 overlay = w["previews"] / f"overlay_{(pages_dir / f'{page:04d}.png').stem}_p{page:04d}.png"
-                page_img = pages_dir / f"{page:04d}.png"
                 if overlay.exists():
                     path = overlay
                 else:
@@ -913,7 +931,7 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
       - pending if pages exist but analysis has not produced overlays/detections
 
     Asset mapping:
-      - If a page_map.json exists under jobs/{id}/pdf/, use it to associate page indices to asset ids.
+      - If a page_map.json exists under jobs/{id}/pdf/, use it to associate page indices to asset ids (and local page indices).
       - Else, infer from detections.json keys by matching the base rel_path against assets list.
       - If still ambiguous and a single PDF asset exists, attribute all pages to that asset.
     """
@@ -956,9 +974,10 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
     page_paths = sorted([p for p in pages_dir.glob("*.png") if p.is_file()])
     for p in page_paths:
         idx = int(p.stem)
-        # Determine detection count by suffix matching "::page:<idx>"
         det_count = 0
         owning_asset_id: Optional[str] = None
+        local_index: Optional[int] = None
+        rel_path_for_key: Optional[str] = None
 
         # Determine owning asset via page_map first
         mp = page_map.get(str(idx)) or page_map.get(idx)
@@ -969,11 +988,17 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
                 owning_asset_id = str(maybe_id)
             elif maybe_rel and maybe_rel in assets:
                 owning_asset_id = assets[maybe_rel].id
+            # capture local index mapping for detections lookup
+            try:
+                local_index = int(mp.get("local_index"))
+            except Exception:
+                local_index = None
+            rel_path_for_key = str(maybe_rel) if maybe_rel else None
 
-        # If not found, infer from detections JSON
+        # If not found, infer from detections JSON following legacy pattern
         if owning_asset_id is None:
             for k, arr in detections_json.items():
-                if k.endswith(f"::page:{idx}"):
+                if k.endswith(f"::page:{idx}"):  # legacy: when global==local
                     det_count = sum(1 for d in (arr or []) if float(d.get("score", 0.0)) >= conf_thr)
                     base_rel = k.split("::page:")[0]
                     a = assets.get(base_rel)
@@ -981,11 +1006,17 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
                         owning_asset_id = a.id
                     break
         else:
-            # still compute detections if we have a key
-            for k, arr in detections_json.items():
-                if k.endswith(f"::page:{idx}"):
-                    det_count = sum(1 for d in (arr or []) if float(d.get("score", 0.0)) >= conf_thr)
-                    break
+            # compute det_count using local_index mapping if available
+            if rel_path_for_key is not None and local_index is not None:
+                key = f"{rel_path_for_key}::page:{local_index}"
+                arr = detections_json.get(key, [])
+                det_count = sum(1 for d in (arr or []) if float(d.get("score", 0.0)) >= conf_thr)
+            else:
+                # fallback to legacy global==local
+                for k, arr in detections_json.items():
+                    if k.endswith(f"::page:{idx}"):
+                        det_count = sum(1 for d in (arr or []) if float(d.get("score", 0.0)) >= conf_thr)
+                        break
 
         # As last resort, if there is exactly one PDF asset, use it
         if owning_asset_id is None and len(pdf_assets) == 1:

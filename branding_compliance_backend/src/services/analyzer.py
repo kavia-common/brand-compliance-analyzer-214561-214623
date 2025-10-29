@@ -173,6 +173,8 @@ class AnalyzerService:
                     pdf_overlays_dir.mkdir(parents=True, exist_ok=True)
                     pages, _sizes = rasterize_pdf(fpath, pdf_pages_dir, dpi=300)
                     log.info("analyze:pdf_rasterized rel_path=%s page_count=%d out_dir=%s", a.rel_path, len(pages), pdf_pages_dir)
+                    if not pages:
+                        log.warning("analyze:pdf_no_pages rel_path=%s", a.rel_path)
 
                     # update asset page_count and persist immediately
                     try:

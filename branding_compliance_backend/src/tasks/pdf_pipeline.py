@@ -185,11 +185,19 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
         detections_by_page: Dict[int, List[Detection]] = {}
 
         # Process each page
+        per_page_counts: List[int] = []
         for idx, page_img in enumerate(raster_pages):
             _update_status(job_id, message=f"Detecting logos on page {idx + 1}/{total_pages}")
             page_bgr = pil_to_cv(page_img)
-            dets = multi_scale_template_match(page_bgr, templates_bgr, match_threshold=params.match_threshold)
+
+            # Run detection with robust preprocessing
+            dets = multi_scale_template_match(
+                page_bgr,
+                templates_bgr,
+                match_threshold=float(params.match_threshold or 0.75),
+            )
             detections_by_page[idx] = dets
+            per_page_counts.append(len(dets))
 
             # Save previews
             _save_page_preview_images(job_id, idx, page_img, dets, new_logo_img)
@@ -222,6 +230,8 @@ def _process_job(job_id: str, pdf_path: str, old_logo_paths: List[str], new_logo
             "findings": {
                 "total_pages": total_pages,
                 "pages": [fp.model_dump() for fp in findings_pages],
+                "per_page_detection_counts": per_page_counts,
+                "total_detections": int(sum(per_page_counts)),
             },
             "timestamps": {"completed": time.time()},
         }

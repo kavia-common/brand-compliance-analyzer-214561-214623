@@ -74,6 +74,21 @@ def nms(detections: List[Detection], iou_threshold: float = 0.3) -> List[Detecti
     return keep
 
 
+def _to_gray_preproc(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Preprocess an image for robust template matching:
+    - convert to gray
+    - histogram equalization to normalize contrast
+    - light gaussian blur to reduce noise
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    # CLAHE helps across varied backgrounds
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    return gray
+
+
 def multi_scale_template_match(
     image_bgr: np.ndarray,
     templates_bgr: List[np.ndarray],
@@ -82,28 +97,41 @@ def multi_scale_template_match(
     method: int = cv2.TM_CCOEFF_NORMED,
 ) -> List[Detection]:
     """
-    Run multi-scale template matching for multiple templates.
+    Run multi-scale template matching for multiple templates with robust preprocessing.
     Returns a list of Detection in pixel coordinates of image_bgr.
     """
     if scales is None:
-        scales = [1.0, 0.9, 1.1, 0.8, 1.2]
+        # wider range of scales to handle different rendering sizes
+        scales = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.35, 1.5]
 
-    H, W = image_bgr.shape[:2]
+    # Preprocess page and templates to grayscale pipeline
+    page_gray = _to_gray_preproc(image_bgr)
+    H, W = page_gray.shape[:2]
     detections: List[Detection] = []
 
-    for t_idx, tpl in enumerate(templates_bgr):
-        th, tw = tpl.shape[:2]
+    for t_idx, tpl_bgr in enumerate(templates_bgr):
+        tpl_gray = _to_gray_preproc(tpl_bgr)
+        th, tw = tpl_gray.shape[:2]
+        # skip tiny templates
+        if th < 5 or tw < 5:
+            continue
         for s in scales:
             new_w = max(5, int(tw * s))
             new_h = max(5, int(th * s))
-            tpl_resized = cv2.resize(tpl, (new_w, new_h), interpolation=cv2.INTER_AREA)
             if new_w > W or new_h > H:
                 continue
+            tpl_resized = cv2.resize(tpl_gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-            res = cv2.matchTemplate(image_bgr, tpl_resized, method)
-            # Locations above threshold
-            loc = np.where(res >= match_threshold)
-            for (y, x) in zip(*loc):
+            # perform matching on grayscale
+            res = cv2.matchTemplate(page_gray, tpl_resized, method)
+
+            # Slightly relax threshold for small templates as correlation tends to be lower
+            adaptive_thresh = match_threshold
+            if min(new_w, new_h) < 24:
+                adaptive_thresh = max(0.6, match_threshold - 0.1)
+
+            ys, xs = np.where(res >= adaptive_thresh)
+            for (y, x) in zip(ys, xs):
                 score = float(res[y, x])
                 detections.append(Detection(x=x, y=y, w=new_w, h=new_h, score=score, template_id=t_idx))
 

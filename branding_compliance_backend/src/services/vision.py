@@ -36,7 +36,18 @@ class Detection:
 
 
 class DetectorConfig:
-    """Lightweight config pulled from env with defaults."""
+    """Lightweight config pulled from env with defaults.
+
+    DETECTOR env:
+      - template: multi-scale normalized cross correlation
+      - orb: feature-based matching robust to rotation/scale
+      - hybrid: both (default)
+
+    QUALITY env adjusts scale range and feature thresholds:
+      - fast: fewer scales, lower nfeatures
+      - balanced: sensible defaults
+      - best: more scales and features for robustness
+    """
     def __init__(self) -> None:
         # DETECTOR: template|orb|hybrid
         self.detector = os.getenv("DETECTOR", "hybrid").lower()
@@ -49,11 +60,12 @@ class DetectorConfig:
             self.min_match_count = 8
             self.orb_nfeatures = 300
         elif self.quality == "best":
-            self.scales = [1.2, 1.0, 0.9, 0.8, 0.7, 0.6]
+            # wider range for robustness as per acceptance: search scales 0.5–1.5 (subset covered via shape limits)
+            self.scales = [1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5]
             self.min_match_count = 18
             self.orb_nfeatures = 1500
         else:  # balanced
-            self.scales = [1.0, 0.9, 0.8, 0.7]
+            self.scales = [1.2, 1.0, 0.9, 0.8, 0.7]
             self.min_match_count = 12
             self.orb_nfeatures = 1000
 
@@ -87,9 +99,17 @@ class VisionUtils:
     # PUBLIC_INTERFACE
     @staticmethod
     def detect_old_logo(image_path: Path, template_path: Path, config: Optional[DetectorConfig] = None) -> List[Detection]:
-        """Detect instances of the old logo in an image using template matching and/or ORB.
+        """Detect instances of the old logo in an image.
 
-        Returns list of Detection entries with bounding boxes and scores.
+        Uses:
+          - Multi-scale normalized template matching (scale-invariant within configured scales)
+          - ORB feature matching with homography (rotation and perspective tolerant)
+
+        Tunables via env:
+          - DETECTOR=template|orb|hybrid (default hybrid)
+          - QUALITY=fast|balanced|best (affects scale list, ORB nfeatures, match thresholds)
+
+        Returns list of Detection entries with bounding boxes, method, score, and optional corner points.
         """
         VisionUtils._ensure_cv2()
         cfg = config or DetectorConfig()

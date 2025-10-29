@@ -84,8 +84,11 @@ class AnalyzerService:
         VisionUtils.save_detections_json(det_map, out)
         return out
 
-    def _overlay_preview(self, job_id: str, asset_path: Path, detections: List[Detection]) -> None:
-        """Create a simple overlay PNG drawing rectangles on detections."""
+    def _overlay_preview(self, job_id: str, asset_path: Path, detections: List[Detection], page_index: int | None = None) -> None:
+        """Create a simple overlay PNG drawing rectangles on detections.
+
+        If page_index is provided, include it in the overlay filename to disambiguate per-page overlays.
+        """
         try:
             from PIL import Image, ImageDraw
         except Exception:
@@ -106,7 +109,9 @@ class AnalyzerService:
                 w = get_job_workspace(job_id)
                 previews: Path = w["previews"]
                 previews.mkdir(parents=True, exist_ok=True)
-                name = f"overlay_{Path(asset_path.name).stem}.png"
+                stem = Path(asset_path.name).stem
+                suffix = f"_p{page_index:04d}" if page_index is not None else ""
+                name = f"overlay_{stem}{suffix}.png"
                 out.save(previews / name, format="PNG")
         except Exception:
             # best-effort only
@@ -177,7 +182,8 @@ class AnalyzerService:
                         # detections map key per-page for downstream fixer
                         key = f"{a.rel_path}::page:{page.index}"
                         detections_map[key] = dets
-                        self._overlay_preview(job_id, page.image_path, dets)
+                        # Save per-page overlay to previews with page index in filename
+                        self._overlay_preview(job_id, page.image_path, dets, page_index=page.index)
                         for d in dets:
                             iid = str(uuid.uuid4())
                             bbox = BoundingBox(x=d.x, y=d.y, width=d.width, height=d.height, normalized=False)

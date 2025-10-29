@@ -602,8 +602,11 @@ def get_results(job_id: str, state: StateStore = Depends(get_state_store)):
 
     if state.get_job(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    # Optionally enrich assets with simple detections/page info for UI
+    assets_list = state.list_assets(job_id)
+    # Build a lightweight map of page counts and leave detections to overlays/previews; issues already returned
     payload = {
-        "assets": [a.model_dump(mode="json") for a in state.list_assets(job_id)],
+        "assets": [a.model_dump(mode="json") for a in assets_list],
         "issues": [i.model_dump(mode="json") for i in state.list_issues(job_id)],
         "summary": state.get_summary(job_id).model_dump(mode="json") if state.get_summary(job_id) else None,
     }
@@ -625,7 +628,12 @@ def get_asset_preview(
     page: int | None = Query(default=None, description="0-based page index (PDF only)"),
     state: StateStore = Depends(get_state_store),
 ):
-    """Serve a preview file based on requested view."""
+    """Serve a preview file based on requested view.
+
+    For PDFs:
+      - page is a 0-based index; if provided, serve rasterized page images (original/fixed) or overlay images with page suffix.
+      - if page is None and view=fixed, return the rebuilt fixed.pdf if available.
+    """
     if state.get_job(job_id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -635,9 +643,15 @@ def get_asset_preview(
         raise HTTPException(status_code=404, detail="Asset not found")
     w = get_job_workspace(job_id)
 
-    # PDF-aware path resolution
-    if getattr(asset, "type", None) and str(asset.type) == "AssetType.pdf" or (hasattr(asset, "type") and asset.type == getattr(type(asset).model_fields['type'].annotation, 'pdf', 'pdf')) or (hasattr(asset, "type") and str(asset.type) == "pdf"):
-        # Normalize check above to avoid enum string mismatch during serialization
+    is_pdf = str(getattr(asset, "type", "")) in ("AssetType.pdf", "pdf")
+    # Validate page range if provided and page_count known
+    if is_pdf and page is not None:
+        if page < 0:
+            raise HTTPException(status_code=400, detail="Invalid page")
+        if getattr(asset, "page_count", None) is not None and page >= int(asset.page_count):
+            raise HTTPException(status_code=404, detail="Page out of range")
+
+    if is_pdf:
         job_dir = w["job"]
         pdf_root = job_dir / "pdf"
         pages_dir = pdf_root / "pages"
@@ -646,34 +660,28 @@ def get_asset_preview(
 
         if view == "original":
             if page is None:
-                # Return the original PDF file itself
                 path = job_dir / asset.rel_path
             else:
-                # Return a rasterized page image
                 cand = pages_dir / f"{page:04d}.png"
                 path = cand if cand.exists() else (job_dir / asset.rel_path)
         elif view == "overlay":
-            # Use overlay generated during analyze; fall back to page image
             if page is None:
-                # try to return a composite? fallback to original PDF
                 path = job_dir / asset.rel_path
             else:
-                overlay = w["previews"] / f"overlay_{Path(pages_dir / f'{page:04d}.png').stem}.png"
+                # overlays saved as overlay_{page-stem}_p{index}.png in previews
+                overlay = w["previews"] / f"overlay_{(pages_dir / f'{page:04d}.png').stem}_p{page:04d}.png"
                 page_img = pages_dir / f"{page:04d}.png"
                 path = overlay if overlay.exists() else (page_img if page_img.exists() else (job_dir / asset.rel_path))
         else:  # fixed
             if page is None:
-                # Return final fixed pdf if exists
                 fixed_pdf = final_dir / "fixed.pdf"
                 alt = w["outputs"] / f"fixed_{Path(asset.original_filename).stem}.pdf"
                 path = fixed_pdf if fixed_pdf.exists() else (alt if alt.exists() else (job_dir / asset.rel_path))
             else:
-                # Return fixed page image preview
                 cand = fixed_pages_dir / f"{page:04d}.png"
                 if cand.exists():
                     path = cand
                 else:
-                    # fall back to original raster
                     op = pages_dir / f"{page:04d}.png"
                     path = op if op.exists() else (job_dir / asset.rel_path)
     else:
@@ -688,7 +696,6 @@ def get_asset_preview(
 
     if not path.exists():
         raise HTTPException(status_code=404, detail="Preview not available")
-    # Infer media type for correct rendering in UI
     guessed, _ = mimetypes.guess_type(str(path))
     media_type = guessed or "application/octet-stream"
     return FileResponse(path, media_type=media_type, filename=path.name)

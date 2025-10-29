@@ -194,6 +194,7 @@ class PageEntry(BaseModel):
     index: int = Field(..., description="0-based page index")
     asset_id: Optional[str] = Field(None, description="Owning asset id if known (PDF)")
     status: str = Field(..., description="Page status: detected|fixed|skipped|pending")
+    has_detection: bool = Field(..., description="True if one or more detections above threshold were found on this page")
     original_url: str = Field(..., description="Preview URL for original rasterized page")
     overlay_url: str = Field(..., description="Preview URL with detection overlay if available")
     fixed_url: str = Field(..., description="Preview URL after applying fix if available")
@@ -899,18 +900,39 @@ def apply_fix(job_id: str, request: Request, state: StateStore = Depends(get_sta
     Returns:
         JSON with list of outputs and optional final_pdf_url (if a PDF asset was fixed).
     """
+    # Validate job existence for clearer 404s instead of silent no-op
+    job = state.get_job(job_id)
+    if job is None:
+        from src.api.errors import error_response
+        raise HTTPException(
+            status_code=404,
+            detail=error_response("job_not_found", "Job not found", {"job_id": job_id}, 404),
+        )
+
     fixer = FixerService(state)
     outputs = fixer.fix_all(job_id)
     w = get_job_workspace(job_id)
     final_pdf = (w["job"] / "pdf" / "final" / "fixed.pdf")
     final_pdf_url = None
     if final_pdf.exists():
-        # expose via direct file response route; also include a public mount URL
-        final_pdf_url = f"/api/v1/jobs/{job_id}/pages/download"  # simple helper; not strictly required for acceptance
+        final_pdf_url = f"/api/v1/jobs/{job_id}/download?type=pdf"
+
+    # Provide hints when no outputs produced to aid debugging in UI/QA
+    hints = {}
+    if not outputs:
+        hints = {
+            "note": "No outputs were produced. Ensure analysis created issues/detections and that brand images were uploaded.",
+            "checks": {
+                "detections_json": str((w["job"] / "work" / "detections.json")),
+                "page_map": str((w["job"] / "pdf" / "page_map.json")),
+            },
+        }
+
     return {
         "message": "Apply fix complete",
         "outputs": [str(p) for p in outputs],
         "final_pdf_url": final_pdf_url,
+        "hints": hints,
     }
 
 
@@ -967,7 +989,7 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
             detections_json = json.loads(det_map_path.read_text(encoding="utf-8"))
         except Exception:
             detections_json = {}
-    conf_thr = float(os.getenv("DETECTION_CONFIDENCE_THRESHOLD", "0.75"))
+    conf_thr = float(os.getenv("DETECTION_CONFIDENCE_THRESHOLD", "0.70"))
 
     entries: List[PageEntry] = []
     # sorted by index from filenames {index:04d}.png
@@ -1037,6 +1059,7 @@ def list_pages(job_id: str, request: Request, state: StateStore = Depends(get_st
             index=idx,
             asset_id=owning_asset_id,
             status=status,
+            has_detection=bool(det_count > 0),
             original_url=f"{base}?view=original",
             overlay_url=f"{base}?view=overlay",
             fixed_url=f"{base}?view=fixed",

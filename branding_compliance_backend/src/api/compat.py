@@ -24,6 +24,7 @@ from src.api.v1 import (
     batch_fix as v1_batch_fix,
     download_artifacts as v1_download_artifacts,
     get_state_store,
+    apply_fix as v1_apply_fix,
 )
 from src.services.state_store import StateStore
 
@@ -235,3 +236,19 @@ def compat_download_artifacts(
         return v1_download_artifacts(job_id, type, state)
     except HTTPException as e:
         raise HTTPException(status_code=e.status_code, detail=_error_payload(e.status_code, str(e.detail)))
+
+
+# PUBLIC_INTERFACE
+@router.post(
+    "/jobs/{job_id}/apply-fix",
+    summary="Apply Fix (compat)",
+    description="Compatibility alias for POST /api/v1/jobs/{job_id}/apply-fix.",
+    tags=["jobs", "assets"],
+)
+def compat_apply_fix(job_id: str, request: Request, state: StateStore = Depends(get_state_store)):
+    """Compatibility endpoint that forwards job-level apply-fix to v1 handler."""
+    try:
+        return v1_apply_fix(job_id, request, state)  # type: ignore[arg-type]
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, dict) else _error_payload(e.status_code, str(e.detail))
+        raise HTTPException(status_code=e.status_code, detail=detail)

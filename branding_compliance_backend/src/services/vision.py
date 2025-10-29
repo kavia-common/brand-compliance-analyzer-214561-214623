@@ -146,6 +146,9 @@ class VisionUtils:
                         seen.add(s)
                         merged.append(s)
                 scales = merged
+            # Allow template threshold override via env
+            import os as _os
+            env_thr = _os.getenv("TEMPLATE_MATCH_THRESHOLD")
             for scale in scales:
                 # Resize template for this scale
                 if abs(scale - 1.0) < 1e-3:
@@ -167,13 +170,18 @@ class VisionUtils:
                     if t_rot.shape[0] >= img_gray.shape[0] or t_rot.shape[1] >= img_gray.shape[1]:
                         continue
                     res = cv2.matchTemplate(img_gray, t_rot, cv2.TM_CCOEFF_NORMED)
-                    # Threshold selection based on quality
+                    # Threshold selection based on quality, slightly more permissive
                     if cfg.quality == "best":
                         thr = 0.68
                     elif cfg.quality == "fast":
-                        thr = 0.82
+                        thr = 0.78
                     else:
-                        thr = 0.75
+                        thr = 0.70
+                    try:
+                        if env_thr is not None:
+                            thr = float(env_thr)
+                    except Exception:
+                        pass
                     loc = np.where(res >= thr)
                     w, h = t_rot.shape[1], t_rot.shape[0]
                     # Collect raw matches
@@ -205,7 +213,8 @@ class VisionUtils:
                 union = a_area + b_area - inter_area + 1e-6
                 return inter_area / union
             for d in dets_sorted:
-                if all(iou(d, k) < 0.3 for k in kept):
+                # Slightly lower IoU NMS threshold keeps more candidates (reduces false negatives)
+                if all(iou(d, k) < 0.2 for k in kept):
                     kept.append(d)
             return kept
 
@@ -222,9 +231,11 @@ class VisionUtils:
                 bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
                 matches = bf.knnMatch(des1, des2, k=2)
                 good = []
-                # Lowe's ratio test
+                # Lowe's ratio test with env override and slightly more permissive default
+                import os as _os2
+                ratio = float(_os2.getenv("ORB_LOWE_RATIO", "0.78"))
                 for m, n in matches:
-                    if m.distance < 0.74 * n.distance:
+                    if m.distance < ratio * n.distance:
                         good.append(m)
                 log.info("detect:orb_matches total=%d good=%d", len(matches), len(good))
                 if len(good) >= cfg.min_match_count:
@@ -257,8 +268,10 @@ class VisionUtils:
                     flann = cv2.FlannBasedMatcher(index_params, search_params)
                     matches = flann.knnMatch(des1, des2, k=2)
                     good_flann = []
+                    # Slightly more permissive FLANN ratio as well
+                    fratio = float(_os2.getenv("ORB_LOWE_RATIO_FLANN", "0.80"))
                     for m, n in matches:
-                        if m.distance < 0.75 * n.distance:
+                        if m.distance < fratio * n.distance:
                             good_flann.append(m)
                     log.info("detect:flann_matches total=%d good=%d", len(matches), len(good_flann))
                     if len(good_flann) >= cfg.min_match_count and len(good_flann) > len(good):
@@ -371,8 +384,8 @@ class VisionUtils:
           - For rotated/perspective detections: build a white patch for the bounding rect then warp it to the quad.
           - White padding fills any empty space to completely cover the detected bbox.
         """
-        # Filter by confidence threshold ~0.75
-        conf_thr = float(os.getenv("DETECTION_CONFIDENCE_THRESHOLD", "0.75"))
+        # Filter by confidence threshold ~0.70
+        conf_thr = float(os.getenv("DETECTION_CONFIDENCE_THRESHOLD", "0.70"))
         good_dets = [d for d in (detections or []) if (d.score is None or d.score >= conf_thr)]
         if not good_dets:
             # If nothing to replace, copy or save original

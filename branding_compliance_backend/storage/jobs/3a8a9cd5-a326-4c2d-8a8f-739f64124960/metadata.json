@@ -1,0 +1,462 @@
+{
+  "job_id": "3a8a9cd5-a326-4c2d-8a8f-739f64124960",
+  "status": "completed",
+  "progress": 1.0,
+  "message": "Completed",
+  "input_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/3a8a9cd5-a326-4c2d-8a8f-739f64124960/input/pdfs/FHP - Parametric Insurance Product Design - Updated.pdf",
+  "output_pdf": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/3a8a9cd5-a326-4c2d-8a8f-739f64124960/output/replaced/FHP - Parametric Insurance Product Design - Updated_replaced.pdf",
+  "outputs": [
+    {
+      "type": "pdf",
+      "path": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/3a8a9cd5-a326-4c2d-8a8f-739f64124960/output/replaced/FHP - Parametric Insurance Product Design - Updated_replaced.pdf",
+      "label": "replaced"
+    }
+  ],
+  "params": {
+    "dpi": 250,
+    "max_pages": null,
+    "match_threshold": 0.8
+  },
+  "findings": {
+    "total_pages": 19,
+    "pages": [
+      {
+        "page_index": 0,
+        "detections": [
+          {
+            "x": 953,
+            "y": 249,
+            "w": 810,
+            "h": 515,
+            "score": 0.8761904761904762,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 1,
+        "detections": []
+      },
+      {
+        "page_index": 2,
+        "detections": [
+          {
+            "x": 1814,
+            "y": 57,
+            "w": 261,
+            "h": 158,
+            "score": 0.9509803921568627,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 3,
+        "detections": [
+          {
+            "x": 1644,
+            "y": 33,
+            "w": 294,
+            "h": 216,
+            "score": 0.9452054794520548,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 4,
+        "detections": [
+          {
+            "x": 1667,
+            "y": 73,
+            "w": 248,
+            "h": 136,
+            "score": 0.9759036144578314,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 5,
+        "detections": [
+          {
+            "x": 1667,
+            "y": 73,
+            "w": 248,
+            "h": 136,
+            "score": 0.975609756097561,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 6,
+        "detections": [
+          {
+            "x": 1660,
+            "y": 62,
+            "w": 261,
+            "h": 159,
+            "score": 0.9714285714285714,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 7,
+        "detections": [
+          {
+            "x": 1650,
+            "y": 45,
+            "w": 281,
+            "h": 192,
+            "score": 0.9421487603305785,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 8,
+        "detections": [
+          {
+            "x": 1659,
+            "y": 62,
+            "w": 261,
+            "h": 159,
+            "score": 0.9514563106796117,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 9,
+        "detections": [
+          {
+            "x": 1660,
+            "y": 62,
+            "w": 261,
+            "h": 159,
+            "score": 0.9803921568627451,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 10,
+        "detections": [
+          {
+            "x": 1661,
+            "y": 62,
+            "w": 260,
+            "h": 159,
+            "score": 0.9523809523809523,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 11,
+        "detections": [
+          {
+            "x": 1667,
+            "y": 73,
+            "w": 248,
+            "h": 136,
+            "score": 0.9759036144578314,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 12,
+        "detections": [
+          {
+            "x": 1655,
+            "y": 53,
+            "w": 271,
+            "h": 176,
+            "score": 0.9508196721311475,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 13,
+        "detections": [
+          {
+            "x": 1667,
+            "y": 73,
+            "w": 248,
+            "h": 136,
+            "score": 0.9878048780487805,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 14,
+        "detections": [
+          {
+            "x": 1644,
+            "y": 33,
+            "w": 294,
+            "h": 216,
+            "score": 0.9452054794520548,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 15,
+        "detections": [
+          {
+            "x": 2260,
+            "y": 63,
+            "w": 261,
+            "h": 158,
+            "score": 0.9619047619047619,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 16,
+        "detections": [
+          {
+            "x": 2254,
+            "y": 53,
+            "w": 272,
+            "h": 176,
+            "score": 0.921875,
+            "template_id": 0
+          }
+        ]
+      },
+      {
+        "page_index": 17,
+        "detections": []
+      },
+      {
+        "page_index": 18,
+        "detections": [
+          {
+            "x": 994,
+            "y": 248,
+            "w": 811,
+            "h": 515,
+            "score": 0.8785942492012779,
+            "template_id": 0
+          }
+        ]
+      }
+    ],
+    "per_page_detection_counts": [
+      1,
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0,
+      1
+    ],
+    "total_detections": 17,
+    "detections_dump": {
+      "0": [
+        {
+          "x": 953,
+          "y": 249,
+          "w": 810,
+          "h": 515,
+          "score": 0.8761904761904762,
+          "template_id": 0
+        }
+      ],
+      "1": [],
+      "2": [
+        {
+          "x": 1814,
+          "y": 57,
+          "w": 261,
+          "h": 158,
+          "score": 0.9509803921568627,
+          "template_id": 0
+        }
+      ],
+      "3": [
+        {
+          "x": 1644,
+          "y": 33,
+          "w": 294,
+          "h": 216,
+          "score": 0.9452054794520548,
+          "template_id": 0
+        }
+      ],
+      "4": [
+        {
+          "x": 1667,
+          "y": 73,
+          "w": 248,
+          "h": 136,
+          "score": 0.9759036144578314,
+          "template_id": 0
+        }
+      ],
+      "5": [
+        {
+          "x": 1667,
+          "y": 73,
+          "w": 248,
+          "h": 136,
+          "score": 0.975609756097561,
+          "template_id": 0
+        }
+      ],
+      "6": [
+        {
+          "x": 1660,
+          "y": 62,
+          "w": 261,
+          "h": 159,
+          "score": 0.9714285714285714,
+          "template_id": 0
+        }
+      ],
+      "7": [
+        {
+          "x": 1650,
+          "y": 45,
+          "w": 281,
+          "h": 192,
+          "score": 0.9421487603305785,
+          "template_id": 0
+        }
+      ],
+      "8": [
+        {
+          "x": 1659,
+          "y": 62,
+          "w": 261,
+          "h": 159,
+          "score": 0.9514563106796117,
+          "template_id": 0
+        }
+      ],
+      "9": [
+        {
+          "x": 1660,
+          "y": 62,
+          "w": 261,
+          "h": 159,
+          "score": 0.9803921568627451,
+          "template_id": 0
+        }
+      ],
+      "10": [
+        {
+          "x": 1661,
+          "y": 62,
+          "w": 260,
+          "h": 159,
+          "score": 0.9523809523809523,
+          "template_id": 0
+        }
+      ],
+      "11": [
+        {
+          "x": 1667,
+          "y": 73,
+          "w": 248,
+          "h": 136,
+          "score": 0.9759036144578314,
+          "template_id": 0
+        }
+      ],
+      "12": [
+        {
+          "x": 1655,
+          "y": 53,
+          "w": 271,
+          "h": 176,
+          "score": 0.9508196721311475,
+          "template_id": 0
+        }
+      ],
+      "13": [
+        {
+          "x": 1667,
+          "y": 73,
+          "w": 248,
+          "h": 136,
+          "score": 0.9878048780487805,
+          "template_id": 0
+        }
+      ],
+      "14": [
+        {
+          "x": 1644,
+          "y": 33,
+          "w": 294,
+          "h": 216,
+          "score": 0.9452054794520548,
+          "template_id": 0
+        }
+      ],
+      "15": [
+        {
+          "x": 2260,
+          "y": 63,
+          "w": 261,
+          "h": 158,
+          "score": 0.9619047619047619,
+          "template_id": 0
+        }
+      ],
+      "16": [
+        {
+          "x": 2254,
+          "y": 53,
+          "w": 272,
+          "h": 176,
+          "score": 0.921875,
+          "template_id": 0
+        }
+      ],
+      "17": [],
+      "18": [
+        {
+          "x": 994,
+          "y": 248,
+          "w": 811,
+          "h": 515,
+          "score": 0.8785942492012779,
+          "template_id": 0
+        }
+      ]
+    }
+  },
+  "debug": {
+    "templates": [
+      {
+        "path": "/home/kavia/workspace/code-generation/brand-compliance-analyzer-214561-214623/branding_compliance_backend/storage/jobs/3a8a9cd5-a326-4c2d-8a8f-739f64124960/input/logos/old/old_0.png",
+        "status": "loaded"
+      }
+    ],
+    "notes": "Raw page PNGs stored as page_XXXX_raw.png; normalized templates stored as template_XX.png in work/pages."
+  },
+  "timestamps": {
+    "completed": 1761736412.0554867
+  }
+}
